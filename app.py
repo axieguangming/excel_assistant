@@ -84,8 +84,13 @@ async def upload_excel(file: UploadFile = File(...)):
 @app.post("/api/chat")
 async def chat(req: ChatRequest):
     """与 AI Agent 对话"""
+    if not req.session_id:
+        raise HTTPException(status_code=400, detail="缺少session_id, 请先长传文件")
     try:
-        reply = run_agent(req.message)
+        reply = run_agent(
+            message=req.message,
+            session_id=req.session_id
+        )
         print(reply)
         return {"reply": reply}
     except Exception as e:

@@ -7,10 +7,11 @@ from langgraph.graph.message import add_messages, BaseMessage
 from langgraph.prebuilt import ToolNode
 from dotenv import load_dotenv
 import json
-from tools import ALL_TOOLS
+from tools import ALL_TOOLS, TOOL_BY_NAME
 from pydantic import BaseModel, Field
 import uuid
 from langgraph.checkpoint.memory import MemorySaver
+from langchain_core.runnables import RunnableConfig
 
 """ 初始化llm等配置"""
 def load_api_config():
@@ -34,6 +35,7 @@ def init_llm():
         base_url=base_url,
         extra_body={"thinking": {"type": "disabled"}}
     )
+    model= model.bind_tools(ALL_TOOLS)
     return model
 
 """ 定义状态 """
@@ -143,26 +145,62 @@ def get_nodes(system_message, reflection_message, model):
         }
 
     # tool node
-    def tool_node(state: dict):
-        results= []
-        for tool_call in state['messages'][-1].tool_calls:
-            # 找到工具
-            tool= ALL_TOOLS[tool_call['name']]
-            try:
-                # 执行工具调用
-                observation= tool.invoke(tool_call['args'])
-            except Exception as e:
-                observation= f"工具执行异常：{str(e)}"
-            results.append(ToolMessage(content=observation, tool_call_id=tool_call['id'], id=generate_msg_id()))
-        msg_ids= get_msg_ids(results)
-        # print(f"tool_node: msg.id:{msg_ids}")
+    def tool_node(state: dict, config: RunnableConfig):
+        session_id = config.get("configurable", {}).get("session_id")
+        if not session_id:
+            raise ValueError("session_id not found in config['configurable']")
+        print(f"[DEBUG] configurable: {config.get('configurable', {})}")
+         # ★ 手动将 session_id 注入到每个 tool_call 的 args 中
+        messages = state["messages"]
+        last_msg = messages[-1]
+        
+        patched_tool_calls = []
+        for tc in last_msg.tool_calls:
+            patched_args = {**tc["args"], "session_id": session_id}
+            patched_tool_calls.append({**tc, "args": patched_args})
+        
+        # 用 patch 后的消息替换最后一条
+        patched_msg = last_msg.model_copy(update={"tool_calls": patched_tool_calls})
+        patched_state = {**state, "messages": messages[:-1] + [patched_msg]}
 
-        round_msg_ids= state['round_msg_ids']
-        round_msg_ids[-1].extend(msg_ids)
+        bt_tool_node= ToolNode(ALL_TOOLS)
+        result= bt_tool_node.invoke(patched_state, config=config)
+        new_tool_messages = result["messages"]
+        new_msg_ids = [msg.id for msg in new_tool_messages]
+
+        old_round_msg_ids = state.get("round_msg_ids", [])
+        updated_round_msg_ids = [
+            list(ids) for ids in old_round_msg_ids  # 深拷贝
+        ]
+        if updated_round_msg_ids:
+            updated_round_msg_ids[-1] = updated_round_msg_ids[-1] + new_msg_ids
+        else:
+            updated_round_msg_ids.append(new_msg_ids)
+
         return {
-            "messages": results,
-            "round_msg_ids": round_msg_ids
+            "messages": new_tool_messages,
+            "round_msg_ids": updated_round_msg_ids,
         }
+
+        # results= []
+        # for tool_call in state['messages'][-1].tool_calls:
+        #     # 找到工具
+        #     tool= TOOL_BY_NAME[tool_call['name']]
+        #     try:
+        #         # 执行工具调用
+        #         observation= tool.invoke(tool_call['args'])
+        #     except Exception as e:
+        #         observation= f"工具执行异常：{str(e)}"
+        #     results.append(ToolMessage(content=observation, tool_call_id=tool_call['id'], id=generate_msg_id()))
+        # msg_ids= get_msg_ids(results)
+        # # print(f"tool_node: msg.id:{msg_ids}")
+
+        # round_msg_ids= state['round_msg_ids']
+        # round_msg_ids[-1].extend(msg_ids)
+        # return {
+        #     "messages": results,
+        #     "round_msg_ids": round_msg_ids
+        # }
 
     # reflection node
     def reflection_node(state: dict):
@@ -217,18 +255,26 @@ def build_agent():
     agent_builder.add_edge("tool_node", "thought_node")
     agent_builder.add_conditional_edges("reflection_node", thought_or_end, ['thought_node', END])
     # 编译
-    agent= agent_builder.compile()
+    checkpointer= MemorySaver()
+    agent= agent_builder.compile(checkpointer= checkpointer)
 
     return agent
 
 """ 运行agent """
 agent= build_agent()
 
-def run_agent(message: str):
+def run_agent(message: str, session_id: str):
+    print(f"message: {message}, session_id: {session_id}")
     # 任务配置
-    config= {'configurable': {'thread_id': 'task_001'}}
+    config= {
+            'configurable': {
+                "thread_id": "task_001",
+                "session_id": session_id
+            }
+        }
     messages= [HumanMessage(message)]
-    results= agent.invoke({"messages": messages})
+    results= agent.invoke({"messages": messages}, config= config)
+    print(results)
     return results['messages'][-1]
 
 """ 流式运行agent """
