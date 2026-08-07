@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+<body>
+<input type="file" id="fileInput" accept=".xlsx,.xls"/>
+<div>
+  <input id="queryInput" placeholder="对excel提问"/>
+  <button onclick="sendQuery()">发送</button>
+</div>
+<div id="chat"></div>
+<script>
+let threadId = null;
+let ws = null;
+const fileInput = document.getElementById("fileInput");
+fileInput.onchange = async ()=>{
+    const fd = new FormData();
+    fd.append("file", fileInput.files[0]);
+    const resp = await fetch("http://127.0.0.1:8000/upload", {method:"POST", body:fd});
+    const data = await resp.json();
+    threadId = data.thread_id;
+    initWs();
+};
+function initWs(){
+    ws = new WebSocket(`ws://127.0.0.1:8000/ws/${threadId}`);
+    ws.onmessage = (evt)=>{
+        const chunk = JSON.parse(evt.data);
+        document.getElementById("chat").innerText += JSON.stringify(chunk, null, 2)+"\n";
+    }
+}
+function sendQuery(){
+    const q = document.getElementById("queryInput").value;
+    ws.send(q);
+}
+</script>
+</body>
+</html>
