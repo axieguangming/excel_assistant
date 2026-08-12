@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Excel AI 助手</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:"PingFang SC","Microsoft YaHei",sans-serif; background:#f0f2f5;
+         height:100vh; display:flex; flex-direction:column; }
+  header { background:linear-gradient(90deg,#1a73e8,#00b4ff); color:#fff;
+           padding:14px 24px; font-size:20px; font-weight:600; }
+  .container { flex:1; display:flex; gap:14px; padding:14px; overflow:hidden; }
+  .panel { background:#fff; border-radius:12px; box-shadow:0 2px 8px rgba(0,0,0,.06);
+           display:flex; flex-direction:column; overflow:hidden; }
+  .left { flex:3; } .right { flex:2; min-width:380px; }
+  .panel-title { padding:12px 16px; border-bottom:1px solid #eee; font-weight:600; font-size:15px; }
+  #upload-area { margin:14px; border:2px dashed #c5cbd3; border-radius:10px; padding:26px;
+                 text-align:center; cursor:pointer; color:#8a919c; transition:.2s; }
+  #upload-area:hover, #upload-area.drag { border-color:#1a73e8; background:#eef5ff; color:#1a73e8; }
+  #file-info { padding:0 16px 8px; font-size:13px; color:#555; }
+  #table-wrap { flex:1; overflow:auto; padding:0 14px 14px; }
+  table { border-collapse:collapse; font-size:13px; white-space:nowrap; }
+  th,td { border:1px solid #e5e7eb; padding:6px 10px; }
+  th { background:#f8fafc; position:sticky; top:0; z-index:1; }
+  tbody tr:nth-child(even) { background:#fafbfc; }
+  #chat-box { flex:1; overflow-y:auto; padding:14px; display:flex; flex-direction:column; gap:12px; }
+  .msg { max-width:88%; padding:10px 14px; border-radius:12px; line-height:1.65;
+         font-size:14px; white-space:pre-wrap; word-break:break-word; }
+  .msg.user { align-self:flex-end; background:#1a73e8; color:#fff; border-bottom-right-radius:4px; }
+  .msg.ai   { align-self:flex-start; background:#f1f3f5; color:#333; border-bottom-left-radius:4px; }
+  .msg details { margin-top:8px; font-size:12px; }
+  .msg pre { background:#272822; color:#f8f8f2; padding:8px; border-radius:6px;
+             overflow-x:auto; white-space:pre; margin-top:4px; }
+  .result-block { margin-top:10px; }
+  .result-block .tbl { max-height:240px; overflow:auto; border:1px solid #e0e0e0; border-radius:8px; }
+  .result-block table th { position:static; background:#e8f1fd; }
+  .dl-btn { display:inline-block; margin-top:8px; background:#0aa84e; color:#fff;
+            padding:6px 16px; border-radius:6px; text-decoration:none; font-size:13px; }
+  .dl-btn:hover { background:#088c41; }
+  .chips { padding:0 14px 10px; display:flex; gap:8px; flex-wrap:wrap; }
+  .chip { font-size:12px; border:1px solid #d5dbe3; border-radius:14px; padding:4px 12px;
+          cursor:pointer; color:#555; }
+  .chip:hover { border-color:#1a73e8; color:#1a73e8; }
+  .chat-input { display:flex; gap:8px; padding:12px; border-top:1px solid #eee; }
+  textarea { flex:1; resize:none; height:54px; padding:8px 12px; border:1px solid #ddd;
+             border-radius:8px; font-size:14px; outline:none; }
+  textarea:focus { border-color:#1a73e8; }
+  .send { background:#1a73e8; color:#fff; border:none; border-radius:8px;
+          padding:0 22px; cursor:pointer; font-size:14px; }
+  .send:disabled { background:#a8c6f0; cursor:not-allowed; }
+</style>
+</head>
+<body>
+<header>📊 Excel AI 助手 <span style="font-size:12px;font-weight:400;opacity:.85">上传表格 → 对话分析 → 导出结果</span></header>
+<div class="container">
+  <!-- 左侧：上传 + 数据可视化 -->
+  <div class="panel left">
+    <div class="panel-title">数据预览</div>
+    <div id="upload-area">📁 点击或拖拽上传 Excel / CSV 文件</div>
+    <input type="file" id="file-input" hidden accept=".xlsx,.xls,.csv">
+    <div id="file-info"></div>
+    <div id="table-wrap"></div>
+  </div>
+
+  <!-- 右侧：聊天 -->
+  <div class="panel right">
+    <div class="panel-title">AI 对话</div>
+    <div id="chat-box"></div>
+    <div class="chips" id="chips"></div>
+    <div class="chat-input">
+      <textarea id="msg-input" placeholder="输入你的问题，如：统计各部门的平均工资…（Enter 发送，Shift+Enter 换行）"></textarea>
+      <button class="send" id="send-btn">发送</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let sessionId = null;
+const $ = id => document.getElementById(id);
+const uploadArea = $('upload-area'), fileInput = $('file-input'),
+      chatBox = $('chat-box'), msgInput = $('msg-input'), sendBtn = $('send-btn');
+
+/* ---------- 上传 ---------- */
+uploadArea.onclick = () => fileInput.click();
+uploadArea.ondragover = e => { e.preventDefault(); uploadArea.classList.add('drag'); };
+uploadArea.ondragleave = () => uploadArea.classList.remove('drag');
+uploadArea.ondrop = e => { e.preventDefault(); uploadArea.classList.remove('drag');
+  if (e.dataTransfer.files[0]) upload(e.dataTransfer.files[0]); };
+fileInput.onchange = () => fileInput.files[0] && upload(fileInput.files[0]);
+
+async function upload(file) {
+  uploadArea.textContent = '⏳ 上传解析中...';
+  const fd = new FormData(); fd.append('file', file);
+  try {
+    const res = await fetch('/api/upload', { method:'POST', body:fd });
+    if (!res.ok) throw new Error((await res.json()).detail || '上传失败');
+    const d = await res.json();
+    sessionId = d.session_id;
+    uploadArea.textContent = `✅ 已加载：${d.filename}（点击可重新上传）`;
+    $('file-info').textContent = `共 ${d.shape[0]} 行 × ${d.shape[1]} 列，字段：${d.columns.join('、')}`;
+    $('table-wrap').innerHTML = '';
+    $('table-wrap').appendChild(buildTable(d.preview));
+    $('chips').innerHTML = '';
+    ['各列的数据概况是怎样的？','找出数值列中最大的前10行','按分类汇总求和'].forEach(t => {
+      const c = document.createElement('span'); c.className='chip'; c.textContent=t;
+      c.onclick = () => { msgInput.value = t; send(); }; $('chips').appendChild(c);
+    });
+    addMsg('ai', `文件「${d.filename}」加载成功（${d.shape[0]} 行 × ${d.shape[1]} 列）。\n请在右侧提问，我来帮你分析～`);
+  } catch (e) {
+    uploadArea.textContent = '📁 上传失败，点击重试'; addMsg('ai', '上传出错：' + e.message);
+  }
+}
+
+/* ---------- 表格渲染（split 格式: {columns, data}） ---------- */
+function buildTable(split) {
+  const wrap = document.createElement('div'); wrap.style.overflow='auto';
+  const table = document.createElement('table');
+  const thead = table.createTHead().insertRow();
+  split.columns.forEach(c => { const th = document.createElement('th'); th.textContent = c; thead.appendChild(th); });
+  const tbody = table.createTBody();
+  split.data.forEach(row => {
+    const tr = tbody.insertRow();
+    row.forEach(v => { const td = tr.insertCell(); td.textContent = v === null ? '' : v; });
+  });
+  wrap.appendChild(table); return wrap;
+}
+
+/* ---------- 聊天 ---------- */
+function addMsg(role, text) {
+  const div = document.createElement('div'); div.className = 'msg ' + role;
+  div.textContent = text; chatBox.appendChild(div);
+  chatBox.scrollTop = chatBox.scrollHeight; return div;
+}
+
+async function send() {
+  const q = msgInput.value.trim();
+  if (!q) return;
+  if (!sessionId) { addMsg('ai', '请先在左侧上传一个 Excel 文件哦～'); return; }
+  msgInput.value = ''; sendBtn.disabled = true;
+  addMsg('user', q);
+  const loading = addMsg('ai', '⏳ AI 正在分析中，请稍候…');
+  try {
+    const res = await fetch('/api/chat', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ session_id: sessionId, question: q })
+    });
+    const d = await res.json();
+    loading.remove();
+    if (!res.ok) throw new Error(d.detail || '请求失败');
+
+    const m = addMsg('ai', d.answer);
+    if (d.code) {                        // 折叠展示生成的代码
+      const det = document.createElement('details');
+      const sm = document.createElement('summary'); sm.textContent = '查看生成的分析代码';
+      const pre = document.createElement('pre'); pre.textContent = d.code;
+      det.append(sm, pre); m.appendChild(det);
+    }
+    if (d.has_result) {                  // 结果 Excel 可视化 + 下载
+      const block = document.createElement('div'); block.className = 'result-block';
+      const title = document.createElement('div');
+      title.textContent = '📋 结果预览（已生成 Excel）：';
+      title.style.cssText = 'font-size:13px;margin-top:8px;font-weight:600';
+      const tbl = document.createElement('div'); tbl.className = 'tbl';
+      tbl.appendChild(buildTable(d.result_preview));
+      const a = document.createElement('a'); a.className = 'dl-btn';
+      a.href = d.download_url; a.textContent = '⬇ 下载结果 Excel';
+      block.append(title, tbl, a); m.appendChild(block);
+    }
+  } catch (e) { loading.remove(); addMsg('ai', '出错了：' + e.message); }
+  sendBtn.disabled = false; chatBox.scrollTop = chatBox.scrollHeight;
+}
+
+sendBtn.onclick = send;
+msgInput.onkeydown = e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+};
+addMsg('ai', '你好！我是 Excel AI 助手 👋\n请先上传 Excel 文件，然后用自然语言向我提问，我会自动分析并生成可下载的 Excel 结果。');
+</script>
+</body>
+</html>
