@@ -5,177 +5,599 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Excel AI 助手</title>
 <style>
-  * { margin:0; padding:0; box-sizing:border-box; }
-  body { font-family:"PingFang SC","Microsoft YaHei",sans-serif; background:#f0f2f5;
-         height:100vh; display:flex; flex-direction:column; }
-  header { background:linear-gradient(90deg,#1a73e8,#00b4ff); color:#fff;
-           padding:14px 24px; font-size:20px; font-weight:600; }
-  .container { flex:1; display:flex; gap:14px; padding:14px; overflow:hidden; }
-  .panel { background:#fff; border-radius:12px; box-shadow:0 2px 8px rgba(0,0,0,.06);
-           display:flex; flex-direction:column; overflow:hidden; }
-  .left { flex:3; } .right { flex:2; min-width:380px; }
-  .panel-title { padding:12px 16px; border-bottom:1px solid #eee; font-weight:600; font-size:15px; }
-  #upload-area { margin:14px; border:2px dashed #c5cbd3; border-radius:10px; padding:26px;
-                 text-align:center; cursor:pointer; color:#8a919c; transition:.2s; }
-  #upload-area:hover, #upload-area.drag { border-color:#1a73e8; background:#eef5ff; color:#1a73e8; }
-  #file-info { padding:0 16px 8px; font-size:13px; color:#555; }
-  #table-wrap { flex:1; overflow:auto; padding:0 14px 14px; }
-  table { border-collapse:collapse; font-size:13px; white-space:nowrap; }
-  th,td { border:1px solid #e5e7eb; padding:6px 10px; }
-  th { background:#f8fafc; position:sticky; top:0; z-index:1; }
-  tbody tr:nth-child(even) { background:#fafbfc; }
-  #chat-box { flex:1; overflow-y:auto; padding:14px; display:flex; flex-direction:column; gap:12px; }
-  .msg { max-width:88%; padding:10px 14px; border-radius:12px; line-height:1.65;
-         font-size:14px; white-space:pre-wrap; word-break:break-word; }
-  .msg.user { align-self:flex-end; background:#1a73e8; color:#fff; border-bottom-right-radius:4px; }
-  .msg.ai   { align-self:flex-start; background:#f1f3f5; color:#333; border-bottom-left-radius:4px; }
-  .msg details { margin-top:8px; font-size:12px; }
-  .msg pre { background:#272822; color:#f8f8f2; padding:8px; border-radius:6px;
-             overflow-x:auto; white-space:pre; margin-top:4px; }
-  .result-block { margin-top:10px; }
-  .result-block .tbl { max-height:240px; overflow:auto; border:1px solid #e0e0e0; border-radius:8px; }
-  .result-block table th { position:static; background:#e8f1fd; }
-  .dl-btn { display:inline-block; margin-top:8px; background:#0aa84e; color:#fff;
-            padding:6px 16px; border-radius:6px; text-decoration:none; font-size:13px; }
-  .dl-btn:hover { background:#088c41; }
-  .chips { padding:0 14px 10px; display:flex; gap:8px; flex-wrap:wrap; }
-  .chip { font-size:12px; border:1px solid #d5dbe3; border-radius:14px; padding:4px 12px;
-          cursor:pointer; color:#555; }
-  .chip:hover { border-color:#1a73e8; color:#1a73e8; }
-  .chat-input { display:flex; gap:8px; padding:12px; border-top:1px solid #eee; }
-  textarea { flex:1; resize:none; height:54px; padding:8px 12px; border:1px solid #ddd;
-             border-radius:8px; font-size:14px; outline:none; }
-  textarea:focus { border-color:#1a73e8; }
-  .send { background:#1a73e8; color:#fff; border:none; border-radius:8px;
-          padding:0 22px; cursor:pointer; font-size:14px; }
-  .send:disabled { background:#a8c6f0; cursor:not-allowed; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #f0f2f5;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* ===== 顶栏 ===== */
+  header {
+    background: linear-gradient(90deg, #1a73e8, #00b4ff);
+    color: #fff;
+    padding: 12px 24px;
+    font-size: 19px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+  }
+  header .sub { font-size: 12px; font-weight: 400; opacity: .85; margin-left: 10px; }
+  #download-all {
+    background: rgba(255,255,255,.15);
+    border: 1px solid rgba(255,255,255,.5);
+    color: #fff;
+    padding: 6px 16px;
+    border-radius: 6px;
+    font-size: 13px;
+    text-decoration: none;
+    display: none;
+    cursor: pointer;
+    transition: .2s;
+  }
+  #download-all:hover { background: rgba(255,255,255,.3); }
+
+  /* ===== 主体布局 ===== */
+  .container {
+    flex: 1;
+    display: flex;
+    gap: 12px;
+    padding: 12px;
+    overflow: hidden;
+  }
+  .panel {
+    background: #fff;
+    border-radius: 12px;
+    box-shadow: 0 2px 8px rgba(0,0,0,.06);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    position: relative;
+  }
+  .left { flex: 3; min-width: 0; }
+  .right { flex: 2; min-width: 380px; }
+
+  /* ===== Sheet 标签栏 ===== */
+  .sheet-tabs {
+    display: flex;
+    align-items: flex-end;
+    gap: 2px;
+    padding: 8px 12px 0;
+    background: #f1f3f4;
+    border-bottom: 1px solid #d9dce1;
+    overflow-x: auto;
+    flex-shrink: 0;
+    min-height: 42px;
+  }
+  .sheet-tabs::-webkit-scrollbar { height: 4px; }
+  .sheet-tabs::-webkit-scrollbar-thumb { background: #ccc; border-radius: 2px; }
+  .sheet-tab {
+    padding: 8px 16px;
+    font-size: 13px;
+    color: #555;
+    background: transparent;
+    border: 1px solid transparent;
+    border-bottom: none;
+    border-radius: 8px 8px 0 0;
+    cursor: pointer;
+    white-space: nowrap;
+    user-select: none;
+    transition: .15s;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .sheet-tab:hover { background: #e8eaed; }
+  .sheet-tab.active {
+    background: #fff;
+    border-color: #d9dce1;
+    color: #1a73e8;
+    font-weight: 600;
+    position: relative;
+  }
+  .sheet-tab.active::after {
+    content: '';
+    position: absolute;
+    left: 0; right: 0; bottom: -1px;
+    height: 2px;
+    background: #fff;
+  }
+  .sheet-tab .icon { font-size: 12px; }
+  .sheet-tab .new-badge {
+    background: #ea4335;
+    color: #fff;
+    font-size: 10px;
+    padding: 1px 5px;
+    border-radius: 8px;
+    animation: pulse 1s ease-in-out 3;
+  }
+  @keyframes pulse { 50% { transform: scale(1.2); } }
+
+  /* ===== 表格区 ===== */
+  .file-info {
+    padding: 8px 14px;
+    font-size: 12px;
+    color: #666;
+    border-bottom: 1px solid #eee;
+    flex-shrink: 0;
+    display: flex;
+    justify-content: space-between;
+  }
+  #table-wrap { flex: 1; overflow: auto; padding: 0; }
+  #table-wrap table {
+    border-collapse: collapse;
+    font-size: 13px;
+    white-space: nowrap;
+  }
+  #table-wrap th, #table-wrap td {
+    border: 1px solid #e5e7eb;
+    padding: 6px 12px;
+    max-width: 300px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  #table-wrap th {
+    background: #f8fafc;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    font-weight: 600;
+  }
+  #table-wrap tbody tr:nth-child(even) { background: #fafbfc; }
+  #table-wrap tbody tr:hover { background: #e8f0fe; }
+  #table-wrap .row-num {
+    background: #f1f3f4;
+    color: #999;
+    font-size: 12px;
+    text-align: center;
+    min-width: 36px;
+  }
+
+  /* ===== 上传遮罩 ===== */
+  #upload-overlay {
+    position: absolute;
+    inset: 0;
+    background: rgba(255,255,255,.96);
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  #upload-area {
+    border: 2px dashed #c5cbd3;
+    border-radius: 12px;
+    padding: 48px 72px;
+    text-align: center;
+    cursor: pointer;
+    color: #8a919c;
+    transition: .2s;
+    max-width: 90%;
+  }
+  #upload-area:hover, #upload-area.drag {
+    border-color: #1a73e8;
+    background: #eef5ff;
+    color: #1a73e8;
+  }
+  #upload-area .big-icon { font-size: 42px; margin-bottom: 12px; }
+  #upload-area .tip { font-size: 13px; margin-top: 8px; opacity: .7; }
+
+  /* ===== 聊天面板 ===== */
+  .panel-title {
+    padding: 12px 16px;
+    border-bottom: 1px solid #eee;
+    font-weight: 600;
+    font-size: 15px;
+    flex-shrink: 0;
+  }
+  #chat-box {
+    flex: 1;
+    overflow-y: auto;
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .msg {
+    max-width: 88%;
+    padding: 10px 14px;
+    border-radius: 12px;
+    line-height: 1.65;
+    font-size: 14px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .msg.user {
+    align-self: flex-end;
+    background: #1a73e8;
+    color: #fff;
+    border-bottom-right-radius: 4px;
+  }
+  .msg.ai {
+    align-self: flex-start;
+    background: #f1f3f5;
+    color: #333;
+    border-bottom-left-radius: 4px;
+  }
+  .msg details { margin-top: 8px; font-size: 12px; }
+  .msg summary { cursor: pointer; color: #1a73e8; }
+  .msg pre {
+    background: #272822;
+    color: #f8f8f2;
+    padding: 8px;
+    border-radius: 6px;
+    overflow-x: auto;
+    white-space: pre;
+    margin-top: 4px;
+    font-size: 12px;
+  }
+  .sheet-jump {
+    display: inline-block;
+    margin-top: 8px;
+    background: #e8f0fe;
+    color: #1a73e8;
+    border: 1px solid #aecbfa;
+    padding: 5px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: .2s;
+  }
+  .sheet-jump:hover { background: #d2e3fc; }
+  .typing {
+    align-self: flex-start;
+    background: #f1f3f5;
+    padding: 12px 16px;
+    border-radius: 12px;
+    display: flex;
+    gap: 4px;
+  }
+  .typing span {
+    width: 7px; height: 7px;
+    background: #999;
+    border-radius: 50%;
+    animation: blink 1.2s infinite;
+  }
+  .typing span:nth-child(2) { animation-delay: .2s; }
+  .typing span:nth-child(3) { animation-delay: .4s; }
+  @keyframes blink { 0%,80%,100% { opacity: .3; } 40% { opacity: 1; } }
+
+  .chips {
+    padding: 8px 14px;
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    border-top: 1px solid #f0f0f0;
+    flex-shrink: 0;
+  }
+  .chip {
+    font-size: 12px;
+    border: 1px solid #d5dbe3;
+    border-radius: 14px;
+    padding: 4px 12px;
+    cursor: pointer;
+    color: #555;
+    transition: .15s;
+  }
+  .chip:hover { border-color: #1a73e8; color: #1a73e8; background: #eef5ff; }
+
+  .chat-input {
+    display: flex;
+    gap: 8px;
+    padding: 12px;
+    border-top: 1px solid #eee;
+    flex-shrink: 0;
+  }
+  textarea {
+    flex: 1;
+    resize: none;
+    height: 54px;
+    padding: 8px 12px;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    font-size: 14px;
+    outline: none;
+    font-family: inherit;
+  }
+  textarea:focus { border-color: #1a73e8; }
+  .send {
+    background: #1a73e8;
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 0 22px;
+    cursor: pointer;
+    font-size: 14px;
+    transition: .2s;
+  }
+  .send:hover { background: #1557b0; }
+  .send:disabled { background: #a8c6f0; cursor: not-allowed; }
 </style>
 </head>
 <body>
-<header>📊 Excel AI 助手 <span style="font-size:12px;font-weight:400;opacity:.85">上传表格 → 对话分析 → 导出结果</span></header>
+
+<header>
+  <div>📊 Excel AI 助手 <span class="sub">上传表格 → 对话分析 → 多Sheet展示 → 下载</span></div>
+  <a id="download-all">⬇ 下载完整 Excel（含所有Sheet）</a>
+</header>
+
 <div class="container">
-  <!-- 左侧：上传 + 数据可视化 -->
+  <!-- ===== 左侧：多Sheet表格展示 ===== -->
   <div class="panel left">
-    <div class="panel-title">数据预览</div>
-    <div id="upload-area">📁 点击或拖拽上传 Excel / CSV 文件</div>
-    <input type="file" id="file-input" hidden accept=".xlsx,.xls,.csv">
-    <div id="file-info"></div>
+    <div class="sheet-tabs" id="sheet-tabs"></div>
+    <div class="file-info" id="file-info"></div>
     <div id="table-wrap"></div>
+
+    <!-- 上传遮罩层 -->
+    <div id="upload-overlay">
+      <div id="upload-area">
+        <div class="big-icon">📁</div>
+        <div>点击或拖拽上传 Excel / CSV 文件</div>
+        <div class="tip">支持 .xlsx / .xls / .csv 格式</div>
+      </div>
+    </div>
+    <input type="file" id="file-input" hidden accept=".xlsx,.xls,.csv">
   </div>
 
-  <!-- 右侧：聊天 -->
+  <!-- ===== 右侧：AI 聊天 ===== -->
   <div class="panel right">
-    <div class="panel-title">AI 对话</div>
+    <div class="panel-title">💬 AI 分析对话</div>
     <div id="chat-box"></div>
     <div class="chips" id="chips"></div>
     <div class="chat-input">
-      <textarea id="msg-input" placeholder="输入你的问题，如：统计各部门的平均工资…（Enter 发送，Shift+Enter 换行）"></textarea>
+      <textarea id="msg-input" placeholder="输入你的问题，如：统计各部门的平均工资…（Enter 发送）"></textarea>
       <button class="send" id="send-btn">发送</button>
     </div>
   </div>
 </div>
 
 <script>
+// ==================== 全局状态 ====================
 let sessionId = null;
-const $ = id => document.getElementById(id);
-const uploadArea = $('upload-area'), fileInput = $('file-input'),
-      chatBox = $('chat-box'), msgInput = $('msg-input'), sendBtn = $('send-btn');
+let sheets = [];           // [{name, split, isNew}]  split = {columns, data}
+let activeSheetIdx = -1;   // 当前激活的 sheet 下标
+let resultCount = 0;       // 结果 sheet 计数
 
-/* ---------- 上传 ---------- */
+const $ = id => document.getElementById(id);
+const uploadOverlay = $('upload-overlay'), uploadArea = $('upload-area'),
+      fileInput = $('file-input'), sheetTabs = $('sheet-tabs'),
+      fileInfo = $('file-info'), tableWrap = $('table-wrap'),
+      chatBox = $('chat-box'), msgInput = $('msg-input'),
+      sendBtn = $('send-btn'), downloadAll = $('download-all');
+
+// ==================== 上传逻辑 ====================
 uploadArea.onclick = () => fileInput.click();
 uploadArea.ondragover = e => { e.preventDefault(); uploadArea.classList.add('drag'); };
 uploadArea.ondragleave = () => uploadArea.classList.remove('drag');
-uploadArea.ondrop = e => { e.preventDefault(); uploadArea.classList.remove('drag');
-  if (e.dataTransfer.files[0]) upload(e.dataTransfer.files[0]); };
+uploadArea.ondrop = e => {
+  e.preventDefault();
+  uploadArea.classList.remove('drag');
+  if (e.dataTransfer.files[0]) upload(e.dataTransfer.files[0]);
+};
 fileInput.onchange = () => fileInput.files[0] && upload(fileInput.files[0]);
 
 async function upload(file) {
-  uploadArea.textContent = '⏳ 上传解析中...';
-  const fd = new FormData(); fd.append('file', file);
+  uploadArea.innerHTML = '<div class="big-icon">⏳</div><div>上传解析中...</div>';
+  const fd = new FormData();
+  fd.append('file', file);
   try {
-    const res = await fetch('/api/upload', { method:'POST', body:fd });
+    const res = await fetch('/api/upload', { method: 'POST', body: fd });
     if (!res.ok) throw new Error((await res.json()).detail || '上传失败');
     const d = await res.json();
     sessionId = d.session_id;
-    uploadArea.textContent = `✅ 已加载：${d.filename}（点击可重新上传）`;
-    $('file-info').textContent = `共 ${d.shape[0]} 行 × ${d.shape[1]} 列，字段：${d.columns.join('、')}`;
-    $('table-wrap').innerHTML = '';
-    $('table-wrap').appendChild(buildTable(d.preview));
-    $('chips').innerHTML = '';
-    ['各列的数据概况是怎样的？','找出数值列中最大的前10行','按分类汇总求和'].forEach(t => {
-      const c = document.createElement('span'); c.className='chip'; c.textContent=t;
-      c.onclick = () => { msgInput.value = t; send(); }; $('chips').appendChild(c);
-    });
-    addMsg('ai', `文件「${d.filename}」加载成功（${d.shape[0]} 行 × ${d.shape[1]} 列）。\n请在右侧提问，我来帮你分析～`);
+    resultCount = 0;
+
+    // 初始化 sheets：第一个为原始数据
+    sheets = [{ name: '原始数据', split: d.preview, isNew: false }];
+    activeSheetIdx = 0;
+
+    // 隐藏上传遮罩
+    uploadOverlay.style.display = 'none';
+    downloadAll.style.display = 'inline-block';
+    downloadAll.href = `/api/download/${sessionId}`;
+
+    fileInfo.innerHTML =
+      `<span>📄 ${d.filename}</span>` +
+      `<span>${d.shape[0]} 行 × ${d.shape[1]} 列</span>`;
+
+    renderSheetTabs();
+    renderTable();
+    renderChips();
+
+    addMsg('ai',
+      `文件「${d.filename}」加载成功（${d.shape[0]} 行 × ${d.shape[1]} 列）。\n` +
+      `字段：${d.columns.join('、')}\n\n` +
+      `请在右侧提问，分析结果会自动创建新 Sheet 展示。`
+    );
   } catch (e) {
-    uploadArea.textContent = '📁 上传失败，点击重试'; addMsg('ai', '上传出错：' + e.message);
+    uploadArea.innerHTML = '<div class="big-icon">❌</div><div>上传失败，点击重试</div>';
+    addMsg('ai', '上传出错：' + e.message);
   }
 }
 
-/* ---------- 表格渲染（split 格式: {columns, data}） ---------- */
-function buildTable(split) {
-  const wrap = document.createElement('div'); wrap.style.overflow='auto';
-  const table = document.createElement('table');
-  const thead = table.createTHead().insertRow();
-  split.columns.forEach(c => { const th = document.createElement('th'); th.textContent = c; thead.appendChild(th); });
-  const tbody = table.createTBody();
-  split.data.forEach(row => {
-    const tr = tbody.insertRow();
-    row.forEach(v => { const td = tr.insertCell(); td.textContent = v === null ? '' : v; });
+// ==================== Sheet 标签渲染 ====================
+function renderSheetTabs() {
+  sheetTabs.innerHTML = '';
+  sheets.forEach((s, i) => {
+    const tab = document.createElement('div');
+    tab.className = 'sheet-tab' + (i === activeSheetIdx ? ' active' : '');
+    tab.innerHTML =
+      `<span class="icon">${i === 0 ? '📄' : '✨'}</span>${escapeHtml(s.name)}` +
+      (s.isNew ? '<span class="new-badge">NEW</span>' : '');
+    tab.onclick = () => {
+      activeSheetIdx = i;
+      s.isNew = false;             // 点击后去掉 NEW 标记
+      renderSheetTabs();
+      renderTable();
+    };
+    sheetTabs.appendChild(tab);
   });
-  wrap.appendChild(table); return wrap;
 }
 
-/* ---------- 聊天 ---------- */
+// ==================== 表格渲染 ====================
+function renderTable() {
+  if (activeSheetIdx < 0 || !sheets[activeSheetIdx]) {
+    tableWrap.innerHTML = '';
+    return;
+  }
+  tableWrap.innerHTML = '';
+  tableWrap.appendChild(buildTable(sheets[activeSheetIdx].split));
+  // 滚动到最右侧的 tab（新结果出现时）
+  sheetTabs.scrollLeft = sheetTabs.scrollWidth;
+}
+
+function buildTable(split) {
+  const table = document.createElement('table');
+  const thead = table.createTHead().insertRow();
+
+  // 行号列
+  const numTh = document.createElement('th');
+  numTh.textContent = '#';
+  numTh.className = 'row-num';
+  thead.appendChild(numTh);
+
+  split.columns.forEach(c => {
+    const th = document.createElement('th');
+    th.textContent = c;
+    thead.appendChild(th);
+  });
+
+  const tbody = table.createTBody();
+  split.data.forEach((row, ri) => {
+    const tr = tbody.insertRow();
+    const numTd = tr.insertCell();
+    numTd.textContent = ri + 1;
+    numTd.className = 'row-num';
+    row.forEach(v => {
+      const td = tr.insertCell();
+      td.textContent = v === null || v === undefined ? '' : v;
+      td.title = v === null || v === undefined ? '' : String(v);
+    });
+  });
+  return table;
+}
+
+// ==================== 快捷提问 ====================
+function renderChips() {
+  const chips = $('chips');
+  chips.innerHTML = '';
+  ['数据的基本情况如何？', '各列的最大值/最小值是多少？', '按分类分组求和', '找出数值最大的前10行']
+    .forEach(t => {
+      const c = document.createElement('span');
+      c.className = 'chip';
+      c.textContent = t;
+      c.onclick = () => { msgInput.value = t; send(); };
+      chips.appendChild(c);
+    });
+}
+
+// ==================== 聊天逻辑 ====================
 function addMsg(role, text) {
-  const div = document.createElement('div'); div.className = 'msg ' + role;
-  div.textContent = text; chatBox.appendChild(div);
-  chatBox.scrollTop = chatBox.scrollHeight; return div;
+  const div = document.createElement('div');
+  div.className = 'msg ' + role;
+  div.textContent = text;
+  chatBox.appendChild(div);
+  chatBox.scrollTop = chatBox.scrollHeight;
+  return div;
+}
+
+function addTyping() {
+  const div = document.createElement('div');
+  div.className = 'typing';
+  div.innerHTML = '<span></span><span></span><span></span>';
+  chatBox.appendChild(div);
+  chatBox.scrollTop = chatBox.scrollHeight;
+  return div;
 }
 
 async function send() {
   const q = msgInput.value.trim();
   if (!q) return;
   if (!sessionId) { addMsg('ai', '请先在左侧上传一个 Excel 文件哦～'); return; }
-  msgInput.value = ''; sendBtn.disabled = true;
+
+  msgInput.value = '';
+  sendBtn.disabled = true;
   addMsg('user', q);
-  const loading = addMsg('ai', '⏳ AI 正在分析中，请稍候…');
+  const typing = addTyping();
+
   try {
     const res = await fetch('/api/chat', {
-      method:'POST', headers:{'Content-Type':'application/json'},
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ session_id: sessionId, question: q })
     });
     const d = await res.json();
-    loading.remove();
+    typing.remove();
     if (!res.ok) throw new Error(d.detail || '请求失败');
 
+    // 1. 文字结论
     const m = addMsg('ai', d.answer);
-    if (d.code) {                        // 折叠展示生成的代码
+
+    // 2. 折叠展示生成的代码
+    if (d.code) {
       const det = document.createElement('details');
-      const sm = document.createElement('summary'); sm.textContent = '查看生成的分析代码';
-      const pre = document.createElement('pre'); pre.textContent = d.code;
-      det.append(sm, pre); m.appendChild(det);
+      const sm = document.createElement('summary');
+      sm.textContent = '查看生成的分析代码';
+      const pre = document.createElement('pre');
+      pre.textContent = d.code;
+      det.append(sm, pre);
+      m.appendChild(det);
     }
-    if (d.has_result) {                  // 结果 Excel 可视化 + 下载
-      const block = document.createElement('div'); block.className = 'result-block';
-      const title = document.createElement('div');
-      title.textContent = '📋 结果预览（已生成 Excel）：';
-      title.style.cssText = 'font-size:13px;margin-top:8px;font-weight:600';
-      const tbl = document.createElement('div'); tbl.className = 'tbl';
-      tbl.appendChild(buildTable(d.result_preview));
-      const a = document.createElement('a'); a.className = 'dl-btn';
-      a.href = d.download_url; a.textContent = '⬇ 下载结果 Excel';
-      block.append(title, tbl, a); m.appendChild(block);
+
+    // 3. 结果 → 创建新 Sheet
+    if (d.has_result && d.result_preview) {
+      resultCount++;
+      const sheetName = d.sheet_name || `分析结果${resultCount}`;
+
+      sheets.push({ name: sheetName, split: d.result_preview, isNew: true });
+
+      // 聊天气泡里加"跳转到该Sheet"按钮
+      const targetIdx = sheets.length - 1;
+      const jump = document.createElement('div');
+      jump.className = 'sheet-jump';
+      jump.textContent = `📑 结果已写入「${sheetName}」，点击查看 →`;
+      jump.onclick = () => {
+        activeSheetIdx = targetIdx;
+        sheets[targetIdx].isNew = false;
+        renderSheetTabs();
+        renderTable();
+      };
+      m.appendChild(jump);
+
+      // 自动切换到新 sheet 展示
+      activeSheetIdx = targetIdx;
+      renderSheetTabs();
+      renderTable();
     }
-  } catch (e) { loading.remove(); addMsg('ai', '出错了：' + e.message); }
-  sendBtn.disabled = false; chatBox.scrollTop = chatBox.scrollHeight;
+  } catch (e) {
+    typing.remove();
+    addMsg('ai', '出错了：' + e.message);
+  }
+  sendBtn.disabled = false;
+  msgInput.focus();
 }
 
 sendBtn.onclick = send;
 msgInput.onkeydown = e => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
 };
-addMsg('ai', '你好！我是 Excel AI 助手 👋\n请先上传 Excel 文件，然后用自然语言向我提问，我会自动分析并生成可下载的 Excel 结果。');
+
+function escapeHtml(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// ==================== 初始欢迎 ====================
+addMsg('ai',
+  '你好！我是 Excel AI 助手 👋\n\n' +
+  '1️⃣ 先在左侧上传 Excel 文件（显示为「原始数据」Sheet）\n' +
+  '2️⃣ 用自然语言向我提问\n' +
+  '3️⃣ 每次分析结果会自动创建新 Sheet，可点击标签切换\n' +
+  '4️⃣ 顶部按钮可下载包含所有 Sheet 的完整 Excel'
+);
 </script>
 </body>
 </html>

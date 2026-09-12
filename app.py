@@ -9,40 +9,42 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
-
+import re as _re
 from agent import run_agent
+from schemas import ChatRequest
 
 app = FastAPI(title="Excel AI 助手")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 UPLOAD_DIR, OUTPUT_DIR = "uploads", "outputs"
+# 创建上传和下载文件夹
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # Demo 用内存会话存储（生产环境请换 Redis）：session_id -> {df, history}
 SESSIONS: dict = {}
 
-
-class ChatRequest(BaseModel):
-    session_id: str
-    question: str
-
-
+# 上传请求处理
 @app.post("/api/upload")
 async def upload(file: UploadFile = File(...)):
+    # 限制上传的文件类型
     if not file.filename.lower().endswith((".xlsx", ".xls", ".csv")):
         raise HTTPException(400, "仅支持 xlsx / xls / csv 文件")
+    # 读取用户上传的文件
     content = await file.read()
 
+    # 生成会话id，并写入upload临时文件夹
     session_id = uuid.uuid4().hex[:12]
     path = os.path.join(UPLOAD_DIR, f"{session_id}_{file.filename}")
     with open(path, "wb") as f:
         f.write(content)
 
+    # 读取存入upload的文件
     df = pd.read_csv(path) if path.endswith(".csv") else pd.read_excel(path)
+    # 存储会话对应的df和聊天历史
     SESSIONS[session_id] = {"df": df, "history": []}
 
+    # 返回所需的内容给前端
     return {
         "session_id": session_id,
         "filename": file.filename,
@@ -54,32 +56,51 @@ async def upload(file: UploadFile = File(...)):
     }
 
 
+# 聊天请求处理
+# app.py  /api/chat 路由中，替换原有 resp 构建部分
 @app.post("/api/chat")
 async def chat(req: ChatRequest):
+    # 获取本次聊天的会话id对应的会话信息：df和聊天历史
     sess = SESSIONS.get(req.session_id)
     if not sess:
         raise HTTPException(404, "会话不存在，请重新上传文件")
 
+    # 调用和运行agent，根据df，本次问题和聊天历史进行处理
     final = run_agent(sess["df"], req.question, sess["history"])
+    # 返回内容
     resp = {"answer": final.get("final_answer", ""), "code": final.get("code", ""),
             "has_result": False}
 
+    # 返回的df
     rdf = final.get("result_df")
-    if rdf is not None and len(rdf) > 0:
-        # 生成结果 Excel
+    if rdf is not None and len(rdf) > 0:    # 如果有df且内容不为空
+        # ✅ 新增：生成 Sheet 名称（取问题前15字符 + 时间戳后4位，避免重名）
+        safe_q = _re.sub(r'[\\/*?:\[\]]', '_', req.question)[:15]
+        ts = str(int(time.time()))[-4:]
+        sheet_name = f"结果_{safe_q}_{ts}"
+
         out_name = f"{req.session_id}_{int(time.time())}_{uuid.uuid4().hex[:6]}.xlsx"
-        rdf.to_excel(os.path.join(OUTPUT_DIR, out_name), index=False)
+        out_path = os.path.join(OUTPUT_DIR, out_name)
+
+        # ✅ 写入 Excel 时同时保留原始数据 Sheet + 结果 Sheet
+        with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
+            sess["df"].to_excel(writer, sheet_name="原始数据", index=False)
+            rdf.to_excel(writer, sheet_name=sheet_name, index=False)
+
         resp.update({
             "has_result": True,
             "download_url": f"/api/download/{out_name}",
-            "result_preview": json.loads(rdf.head(100).to_json(orient="split", date_format="iso", force_ascii=False)),
+            "result_sheet_name": sheet_name,   # ✅ 新增
+            "result_preview": json.loads(
+                rdf.head(200).to_json(orient="split", date_format="iso", force_ascii=False)
+            ),
         })
 
     sess["history"] += [{"role": "user", "content": req.question},
                         {"role": "assistant", "content": resp["answer"]}]
     return resp
 
-
+# 下载请求
 @app.get("/api/download/{filename}")
 async def download(filename: str):
     path = os.path.join(OUTPUT_DIR, filename)

@@ -2,7 +2,6 @@
 import io
 import os
 import re
-from typing import TypedDict, Any, Optional
 
 import numpy as np
 import pandas as pd
@@ -10,6 +9,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 from langgraph.graph import StateGraph, END
 from load_model import init_llm
+from state import AgentState
 
 # ---------- LLM（OpenAI 兼容接口，可换 DeepSeek / 通义千问 / Ollama 等） ----------
 # llm = ChatOpenAI(
@@ -34,6 +34,7 @@ def _safe_import(name, *args, **kwargs):
         return _ALLOWED_MODULES[name]
     raise ImportError(f"禁止导入模块: {name}")
 
+
 SAFE_BUILTINS = {
     "__import__": _safe_import,
     "len": len, "str": str, "int": int, "float": float, "bool": bool,
@@ -42,20 +43,6 @@ SAFE_BUILTINS = {
     "range": range, "enumerate": enumerate, "zip": zip, "map": map,
     "filter": filter, "print": print, "isinstance": isinstance,
 }
-
-
-# ---------- 状态定义 ----------
-class AgentState(TypedDict):
-    df: Any                      # 上传的 DataFrame
-    df_info: str                 # 数据结构描述（喂给 LLM）
-    question: str                # 用户问题
-    history: list                # 多轮对话历史
-    code: str                    # LLM 生成的 pandas 代码
-    error: str                   # 执行报错信息
-    retries: int                 # 已重试次数
-    result_df: Optional[Any]     # 结果 DataFrame
-    answer_text: str             # 纯文本回答（闲聊类问题）
-    final_answer: str            # 最终文字结论
 
 
 def build_df_info(df: pd.DataFrame) -> str:
@@ -78,12 +65,13 @@ def _fmt_history(history: list) -> str:
     return "\n".join(f"{h['role']}: {h['content'][:200]}" for h in history[-6:])
 
 
+# 提取代码内容
 def _extract_code(text: str) -> str:
     m = re.search(r"```(?:python)?\s*(.*?)```", text, re.S)
     return (m.group(1) if m else text).strip()
 
 
-CODE_SYSTEM = """你是一名资深数据分析师。用户上传的 Excel 已加载为 pandas DataFrame，变量名为 df。
+CODE_SYSTEM = """资深数据分析师，用户上传的 Excel 已加载为 pandas DataFrame，变量名为 df。
 请根据用户问题编写 Python(pandas) 代码完成分析任务。
 
 严格要求:
