@@ -1,6 +1,6 @@
 # Excel AI 助手
 
-简要说明：一个基于 FastAPI和LangGraph 的网页端应用，允许用户上传 Excel/CSV 文件，对表格内容进行提问与处理，并导出带有“原始数据”和“结果”两个 Sheet 的 Excel 文件。
+简要说明：一个网页端的Excel助手，允许用户上传 Excel/CSV 文件并提问，后端基于LangGraph框架构建了excel agent，agent能够根据用户上传的表格和提问进行思考和分析，生成代码，并调用代码执行工具执行，不断循环直到任务完成。该应用还支持表格的可视化，以及生成结果的可视化。
 
 主要功能：
 - 上传 xlsx / xls / csv 文件并返回表结构、预览和 session_id（/api/upload）。
