@@ -3,6 +3,7 @@ import os
 import json
 import uuid
 import time
+import io
 
 import pandas as pd
 from fastapi import FastAPI, UploadFile, File, HTTPException
@@ -12,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 import re as _re
 from agent import run_agent
 from schemas import ChatRequest
+from agent import agent_app
 
 app = FastAPI(title="Excel AI 助手")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -54,6 +56,29 @@ async def upload(file: UploadFile = File(...)):
         # split 格式便于前端直接渲染表格
         "preview": json.loads(df.head(100).to_json(orient="split", date_format="iso", force_ascii=False)),
     }
+
+
+def build_df_info(df: pd.DataFrame) -> str:
+    """生成给 LLM 看的数据描述"""
+    buf = io.StringIO()
+    df.info(buf=buf)
+    try:
+        preview = df.head(8).to_markdown(index=False)
+    except Exception:
+        preview = df.head(8).to_string(index=False)
+    return (f"数据形状: {df.shape[0]} 行 x {df.shape[1]} 列\n"
+            f"列名: {list(df.columns)}\n\n"
+            f"字段类型:\n{buf.getvalue()}\n"
+            f"数据预览(前8行):\n{preview}")
+
+def run_agent(df: pd.DataFrame, question: str, history: list) -> dict:
+    """对外入口：返回最终状态"""
+    init_state = {
+        "df": df, "df_info": build_df_info(df), "question": question,
+        "history": history, "code": "", "error": "", "retries": 0,
+        "result_df": None, "answer_text": "", "final_answer": "",
+    }
+    return agent_app.invoke(init_state, config={"recursion_limit": 30})
 
 
 # 聊天请求处理

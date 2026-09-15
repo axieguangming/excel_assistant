@@ -1,5 +1,4 @@
 # agent.py
-import io
 import os
 import re
 
@@ -11,13 +10,7 @@ from langgraph.graph import StateGraph, END
 from load_model import init_llm
 from state import AgentState
 
-# ---------- LLM（OpenAI 兼容接口，可换 DeepSeek / 通义千问 / Ollama 等） ----------
-# llm = ChatOpenAI(
-#     model=os.getenv("MODEL_NAME", "qwen-plus"),
-#     api_key=os.getenv("OPENAI_API_KEY", "sk-xxx"),
-#     base_url=os.getenv("OPENAI_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
-#     temperature=0,
-# )
+
 llm= init_llm()
 
 MAX_RETRY = 3
@@ -45,20 +38,6 @@ SAFE_BUILTINS = {
 }
 
 
-def build_df_info(df: pd.DataFrame) -> str:
-    """生成给 LLM 看的数据描述"""
-    buf = io.StringIO()
-    df.info(buf=buf)
-    try:
-        preview = df.head(8).to_markdown(index=False)
-    except Exception:
-        preview = df.head(8).to_string(index=False)
-    return (f"数据形状: {df.shape[0]} 行 x {df.shape[1]} 列\n"
-            f"列名: {list(df.columns)}\n\n"
-            f"字段类型:\n{buf.getvalue()}\n"
-            f"数据预览(前8行):\n{preview}")
-
-
 def _fmt_history(history: list) -> str:
     if not history:
         return "（无）"
@@ -71,7 +50,7 @@ def _extract_code(text: str) -> str:
     return (m.group(1) if m else text).strip()
 
 
-CODE_SYSTEM = """资深数据分析师，用户上传的 Excel 已加载为 pandas DataFrame，变量名为 df。
+CODE_SYSTEM = """资深的数据分析师，用户上传的 Excel 已加载为 pandas DataFrame，变量名为 df。
 请根据用户问题编写 Python(pandas) 代码完成分析任务。
 
 严格要求:
@@ -147,11 +126,3 @@ graph.add_edge("summarize", END)
 agent_app = graph.compile()
 
 
-def run_agent(df: pd.DataFrame, question: str, history: list) -> dict:
-    """对外入口：返回最终状态"""
-    init_state = {
-        "df": df, "df_info": build_df_info(df), "question": question,
-        "history": history, "code": "", "error": "", "retries": 0,
-        "result_df": None, "answer_text": "", "final_answer": "",
-    }
-    return agent_app.invoke(init_state, config={"recursion_limit": 30})
