@@ -11,9 +11,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 import re as _re
-from agent import run_agent
-from schemas import ChatRequest
 from agent import agent_app
+from schemas import ChatRequest
 
 app = FastAPI(title="Excel AI 助手")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -77,6 +76,7 @@ def run_agent(df: pd.DataFrame, question: str, history: list) -> dict:
         "df": df, "df_info": build_df_info(df), "question": question,
         "history": history, "code": "", "error": "", "retries": 0,
         "result_df": None, "answer_text": "", "final_answer": "",
+        "chart_file": "",
     }
     return agent_app.invoke(init_state, config={"recursion_limit": 30})
 
@@ -94,7 +94,7 @@ async def chat(req: ChatRequest):
     final = run_agent(sess["df"], req.question, sess["history"])
     # 返回内容
     resp = {"answer": final.get("final_answer", ""), "code": final.get("code", ""),
-            "has_result": False}
+            "has_result": False, "chart_url": final.get("chart_file", "")}
 
     # 返回的df
     rdf = final.get("result_df")
@@ -133,6 +133,14 @@ async def download(filename: str):
         raise HTTPException(404, "文件不存在")
     return FileResponse(path, filename=filename,
                         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+# 图表图片服务
+@app.get("/api/chart/{filename}")
+async def serve_chart(filename: str):
+    path = os.path.join(OUTPUT_DIR, filename)
+    if not os.path.exists(path):
+        raise HTTPException(404, "图表不存在")
+    return FileResponse(path, media_type="image/png")
 
 
 # 前端页面

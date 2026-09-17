@@ -158,6 +158,28 @@
     min-width: 36px;
   }
 
+  /* ===== 图表展示 ===== */
+  .chart-wrap {
+    padding: 16px;
+    text-align: center;
+    border-bottom: 1px solid #eee;
+    background: #fafbfc;
+  }
+  .chart-wrap img {
+    max-width: 100%;
+    height: auto;
+    max-height: 460px;
+    border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0,0,0,.08);
+  }
+  .msg .chart-inline { margin-top: 8px; }
+  .msg .chart-inline img {
+    max-width: 100%;
+    max-height: 300px;
+    border-radius: 6px;
+    box-shadow: 0 1px 4px rgba(0,0,0,.1);
+  }
+
   /* ===== 上传遮罩 ===== */
   #upload-overlay {
     position: absolute;
@@ -426,7 +448,7 @@ function renderSheetTabs() {
     const tab = document.createElement('div');
     tab.className = 'sheet-tab' + (i === activeSheetIdx ? ' active' : '');
     tab.innerHTML =
-      `<span class="icon">${i === 0 ? '📄' : '✨'}</span>${escapeHtml(s.name)}` +
+      `<span class="icon">${i === 0 ? '📄' : (s.chart_url ? '📈' : '✨')}</span>${escapeHtml(s.name)}` +
       (s.isNew ? '<span class="new-badge">NEW</span>' : '');
     tab.onclick = () => {
       activeSheetIdx = i;
@@ -445,7 +467,19 @@ function renderTable() {
     return;
   }
   tableWrap.innerHTML = '';
-  tableWrap.appendChild(buildTable(sheets[activeSheetIdx].split));
+  const sheet = sheets[activeSheetIdx];
+  if (sheet.chart_url) {
+    const chartDiv = document.createElement('div');
+    chartDiv.className = 'chart-wrap';
+    const img = document.createElement('img');
+    img.src = sheet.chart_url;
+    img.alt = '分析图表';
+    chartDiv.appendChild(img);
+    tableWrap.appendChild(chartDiv);
+  }
+  if (sheet.split) {
+    tableWrap.appendChild(buildTable(sheet.split));
+  }
   // 滚动到最右侧的 tab（新结果出现时）
   sheetTabs.scrollLeft = sheetTabs.scrollWidth;
 }
@@ -485,7 +519,7 @@ function buildTable(split) {
 function renderChips() {
   const chips = $('chips');
   chips.innerHTML = '';
-  ['数据的基本情况如何？', '各列的最大值/最小值是多少？', '按分类分组求和', '找出数值最大的前10行']
+  ['数据的基本情况如何？', '各列的最大值/最小值是多少？', '按分类分组求和', '找出数值最大的前10行', '用柱状图展示各分类汇总', '用饼图展示占比分布']
     .forEach(t => {
       const c = document.createElement('span');
       c.className = 'chip';
@@ -548,14 +582,24 @@ async function send() {
       m.appendChild(det);
     }
 
-    // 3. 结果 → 创建新 Sheet
+    // 3. 结果 → 创建新 Sheet（可含图表）
+    const chartUrl = d.chart_url || '';
     if (d.has_result && d.result_preview) {
       resultCount++;
-      const sheetName = d.sheet_name || `分析结果${resultCount}`;
+      const sheetName = d.result_sheet_name || `分析结果${resultCount}`;
 
-      sheets.push({ name: sheetName, split: d.result_preview, isNew: true });
+      sheets.push({ name: sheetName, split: d.result_preview, isNew: true, chart_url: chartUrl });
 
-      // 聊天气泡里加"跳转到该Sheet"按钮
+      if (chartUrl) {
+        const chartDiv = document.createElement('div');
+        chartDiv.className = 'chart-inline';
+        const img = document.createElement('img');
+        img.src = chartUrl;
+        img.alt = '分析图表';
+        chartDiv.appendChild(img);
+        m.appendChild(chartDiv);
+      }
+
       const targetIdx = sheets.length - 1;
       const jump = document.createElement('div');
       jump.className = 'sheet-jump';
@@ -568,7 +612,35 @@ async function send() {
       };
       m.appendChild(jump);
 
-      // 自动切换到新 sheet 展示
+      activeSheetIdx = targetIdx;
+      renderSheetTabs();
+      renderTable();
+    } else if (chartUrl) {
+      // 只有图表、没有结果表的场景
+      resultCount++;
+      const sheetName = d.result_sheet_name || `图表${resultCount}`;
+      sheets.push({ name: sheetName, split: null, isNew: true, chart_url: chartUrl });
+
+      const chartDiv = document.createElement('div');
+      chartDiv.className = 'chart-inline';
+      const img = document.createElement('img');
+      img.src = chartUrl;
+      img.alt = '分析图表';
+      chartDiv.appendChild(img);
+      m.appendChild(chartDiv);
+
+      const targetIdx = sheets.length - 1;
+      const jump = document.createElement('div');
+      jump.className = 'sheet-jump';
+      jump.textContent = `📑 图表已保存到「${sheetName}」，点击查看 →`;
+      jump.onclick = () => {
+        activeSheetIdx = targetIdx;
+        sheets[targetIdx].isNew = false;
+        renderSheetTabs();
+        renderTable();
+      };
+      m.appendChild(jump);
+
       activeSheetIdx = targetIdx;
       renderSheetTabs();
       renderTable();

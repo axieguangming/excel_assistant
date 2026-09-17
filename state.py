@@ -13,3 +13,4 @@ class AgentState(TypedDict):
     result_df: Optional[Any]     # 结果 DataFrame
     answer_text: str             # 纯文本回答（闲聊类问题）
     final_answer: str            # 最终文字结论
+    chart_file: str              # 生成的图表文件URL

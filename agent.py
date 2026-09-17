@@ -5,6 +5,14 @@ import re
 import numpy as np
 import pandas as pd
 from langchain_openai import ChatOpenAI
+
+try:
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as _plt
+    _HAS_MPL = True
+except ImportError:
+    _HAS_MPL = False
 from langchain_core.messages import SystemMessage, HumanMessage
 from langgraph.graph import StateGraph, END
 from load_model import init_llm
@@ -20,11 +28,16 @@ import re as _re
 import datetime as _dt
 import math as _math
 
-_ALLOWED_MODULES = {"pandas": pd, "numpy": np, "re": _re, "datetime": _dt, "math": _math}
+_real_import = __import__
+
+_ALLOWED_ROOTS = {"pandas", "numpy", "re", "datetime", "math"}
+if _HAS_MPL:
+    _ALLOWED_ROOTS.add("matplotlib")
 
 def _safe_import(name, *args, **kwargs):
-    if name in _ALLOWED_MODULES:
-        return _ALLOWED_MODULES[name]
+    root = name.split(".")[0]
+    if root in _ALLOWED_ROOTS:
+        return _real_import(name, *args, **kwargs)
     raise ImportError(f"禁止导入模块: {name}")
 
 
@@ -36,6 +49,28 @@ SAFE_BUILTINS = {
     "range": range, "enumerate": enumerate, "zip": zip, "map": map,
     "filter": filter, "print": print, "isinstance": isinstance,
 }
+
+OUTPUT_DIR = "outputs"
+_chart_counter = 0
+
+def _make_save_chart():
+    """创建 save_chart 闭包，用于在沙箱中保存 matplotlib 图表并返回其访问URL"""
+    def save_chart(fig=None, name=None):
+        global _chart_counter
+        if not _HAS_MPL:
+            raise RuntimeError("matplotlib 未安装，无法绘图")
+        if name is None:
+            _chart_counter += 1
+            name = f"chart_{_chart_counter}"
+        import uuid
+        safe_name = re.sub(r'[^\w\u4e00-\u9fff-]', '_', str(name))
+        fname = f"chart_{safe_name}_{uuid.uuid4().hex[:6]}.png"
+        fpath = os.path.join(OUTPUT_DIR, fname)
+        target = fig if hasattr(fig, 'savefig') else _plt.gcf()
+        target.savefig(fpath, dpi=150, bbox_inches='tight', facecolor='white')
+        _plt.close(target)
+        return f"/api/chart/{fname}"
+    return save_chart
 
 
 def _fmt_history(history: list) -> str:
@@ -57,8 +92,14 @@ CODE_SYSTEM = """资深的数据分析师，用户上传的 Excel 已加载为 p
 1. 只输出一段 ```python ``` 代码，不要任何解释。
 2. 数据分析结果必须赋值给变量 result，且 result 必须是 pandas.DataFrame（即使只有一个汇总值，也要构造成 DataFrame，列名用中文便于阅读）。
 3. 如果用户问题是闲聊或不需要数据处理，不要设置 result，改为给变量 answer_text 赋值一段文本回答。
-4. 禁止读写文件、网络请求；只允许使用 pandas/numpy/re/datetime/math。
+4. 禁止读写文件、网络请求；只允许使用 pandas/numpy/re/datetime/math/matplotlib。
 5. 注意列名的大小写与空格，必要时先清洗数据。环境中已导入 pd、np。
+6. 当用户希望可视化（柱状图/折线图/饼图/散点图等），用 matplotlib 绘图：
+   - 环境已注入 plt（即 matplotlib.pyplot）和 save_chart 函数。
+   - 绘图前设置中文字体：plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']; plt.rcParams['axes.unicode_minus'] = False
+   - 图表需有标题和坐标轴标签。
+   - 保存图表：chart_url = save_chart(plt.gcf(), "图表名称")  或直接 chart_url = save_chart(name="图表名称")
+   - 即使绘图，也必须同时给出 result DataFrame（图表对应的数据），让结果表可展示。
 """
 
 # ---------- 节点 1：生成代码 ----------
@@ -77,17 +118,23 @@ def generate_code(state: AgentState):
 # ---------- 节点 2：执行代码 ----------
 def execute_code(state: AgentState):
     namespace = {"df": state["df"].copy(), "pd": pd, "np": np,
-                 "result": None, "answer_text": None}
+                 "result": None, "answer_text": None, "chart_url": None}
+    if _HAS_MPL:
+        namespace["plt"] = _plt
+        namespace["matplotlib"] = matplotlib
+        namespace["save_chart"] = _make_save_chart()
     try:
         exec(state["code"], {"__builtins__": SAFE_BUILTINS}, namespace)
         result, answer_text = namespace.get("result"), namespace.get("answer_text") or ""
+        chart_file = namespace.get("chart_url") or ""
         if result is not None and not isinstance(result, pd.DataFrame):
             result = pd.DataFrame([result]) if isinstance(result, (int, float, str)) \
                      else pd.DataFrame(result)
         if result is None and not answer_text:
             return {"error": "代码执行成功但未产生 result 或 answer_text，请补充。",
                     "retries": state["retries"] + 1}
-        return {"result_df": result, "answer_text": answer_text, "error": ""}
+        return {"result_df": result, "answer_text": answer_text, "error": "",
+                "chart_file": chart_file}
     except Exception as e:
         return {"error": f"{type(e).__name__}: {e}", "retries": state["retries"] + 1}
 
