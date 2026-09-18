@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 outputs/
 uploads/
+addin/certs/
+vibe_images/
+data/

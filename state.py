@@ -14,3 +14,4 @@ class AgentState(TypedDict):
     answer_text: str             # 纯文本回答（闲聊类问题）
     final_answer: str            # 最终文字结论
     chart_file: str              # 生成的图表文件URL
+    user_prompt: str             # 本轮喂给 LLM 的完整 prompt（用于采集微调数据）

@@ -8,7 +8,26 @@
 - 下载处理结果的 Excel 文件（/api/download/{filename}）。
 - 提供静态前端页面入口（static 目录）。
 
-运行展示：
+## 🖥️ 桌面端 + 本地模型（v0.9，当前方向）
+项目正从「网页 / Excel 加载项」转向 **PC 桌面应用**，以便后续把 LLM 换成**本地微调小模型**（数据不出本机、可离线）。
+
+- 桌面外壳：`desktop.py`（pywebview + 后台线程内嵌 FastAPI），启动：`pip install pywebview` 后 `python desktop.py`。
+- LLM 提供方开关：`.env` 里 `LLM_PROVIDER=remote|local`，本地默认走 Ollama 的 OpenAI 兼容接口（`load_model.py`）。
+- 微调语料自动采集：`agent.py` 把每次 `(prompt, code, ok, err)` 写入 `data/codegen_log.jsonl`。
+- 完整说明（Ollama CPU 部署、模型选型、LLaMA-Factory→GGUF 微调回路）：见 **[LOCAL_MODEL.md](./LOCAL_MODEL.md)**。
+
+## 🧩 Excel 加载项（v0.9，方案1，已暂缓）
+> Excel 2021 **标准版**不支持侧加载外部加载项（无「显示在菜单」/「上传我的加载项」，需 Windows 开发者模式或企业版），故此方案暂缓，代码保留在仓库中。
+
+除了网页版，还把智能体做成了 **Microsoft Excel 加载项（Office Add-in）**：在真实 Excel 里用自然语言分析**当前工作表**，结果写入**新工作表**并生成 **Excel 原生可编辑图表**。后端（FastAPI + LangGraph）完全复用，仅新增任务窗格前端与 `POST /api/session`（用工作表数据建会话）。
+
+- 清单：`addin/manifest.xml`（Excel 2021 标准版，传统 v1.1 schema）
+- 任务窗格：`static/addin/taskpane.html`（Office.js）
+- 证书/侧加载/使用说明：见 **[addin/README.md](./addin/README.md)**
+
+简要步骤：`bash addin/make_cert.sh` → 管理员信任证书 → `export SSL_CERTFILE/SSL_KEYFILE` 后 `python app.py`（https://localhost:8443）→ Excel「受信任的目录」侧加载 manifest。
+
+## 运行展示
 - 初始页面
 ![替代文字](./运行展示/初始化页面.png)
 - 上传excel

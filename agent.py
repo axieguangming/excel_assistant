@@ -1,6 +1,7 @@
 # agent.py
 import os
 import re
+import json
 
 import numpy as np
 import pandas as pd
@@ -102,8 +103,21 @@ CODE_SYSTEM = """资深的数据分析师，用户上传的 Excel 已加载为 p
    - 即使绘图，也必须同时给出 result DataFrame（图表对应的数据），让结果表可展示。
 """
 
+# ---------- 训练数据采集：记录 (prompt → code) 对，供后续微调 ----------
+DATA_DIR = os.getenv("TRAIN_DATA_DIR", "data")
+
+def _log_sample(prompt: str, code: str, ok: bool, err: str = ""):
+    """把一次代码生成结果追加写入 JSONL，成功样本是主要微调语料。"""
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        record = {"prompt": prompt, "code": code, "ok": ok, "err": err}
+        with open(os.path.join(DATA_DIR, "codegen_log.jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:
+        pass  # 记录失败不影响主流程
+
 # ---------- 节点 1：生成代码 ----------
-def generate_code(state: AgentState):
+def _build_prompt(state: AgentState) -> str:
     user = (f"数据信息:\n{state['df_info']}\n\n"
             f"历史对话:\n{_fmt_history(state['history'])}\n\n"
             f"当前问题: {state['question']}")
@@ -111,8 +125,12 @@ def generate_code(state: AgentState):
         user += (f"\n\n⚠️ 上一次生成的代码执行报错:\n{state['error']}\n"
                  f"上一次的代码:\n{state.get('code', '')}\n"
                  f"请定位并修正错误，重新输出完整代码。")
+    return user
+
+def generate_code(state: AgentState):
+    user = _build_prompt(state)
     resp = llm.invoke([SystemMessage(content=CODE_SYSTEM), HumanMessage(content=user)])
-    return {"code": _extract_code(resp.content), "error": ""}
+    return {"code": _extract_code(resp.content), "error": "", "user_prompt": user}
 
 
 # ---------- 节点 2：执行代码 ----------
@@ -131,12 +149,16 @@ def execute_code(state: AgentState):
             result = pd.DataFrame([result]) if isinstance(result, (int, float, str)) \
                      else pd.DataFrame(result)
         if result is None and not answer_text:
-            return {"error": "代码执行成功但未产生 result 或 answer_text，请补充。",
-                    "retries": state["retries"] + 1}
+            err = "代码执行成功但未产生 result 或 answer_text，请补充。"
+            _log_sample(state.get("user_prompt", ""), state["code"], False, err)
+            return {"error": err, "retries": state["retries"] + 1}
+        _log_sample(state.get("user_prompt", ""), state["code"], True)
         return {"result_df": result, "answer_text": answer_text, "error": "",
                 "chart_file": chart_file}
     except Exception as e:
-        return {"error": f"{type(e).__name__}: {e}", "retries": state["retries"] + 1}
+        err = f"{type(e).__name__}: {e}"
+        _log_sample(state.get("user_prompt", ""), state["code"], False, err)
+        return {"error": err, "retries": state["retries"] + 1}
 
 
 # ---------- 条件路由：报错则重试，否则总结 ----------

@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 import re as _re
 from agent import agent_app
-from schemas import ChatRequest
+from schemas import ChatRequest, SessionRequest
 
 app = FastAPI(title="Excel AI 助手")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -53,6 +53,24 @@ async def upload(file: UploadFile = File(...)):
         "columns": list(df.columns),
         "dtypes": {k: str(v) for k, v in df.dtypes.items()},
         # split 格式便于前端直接渲染表格
+        "preview": json.loads(df.head(100).to_json(orient="split", date_format="iso", force_ascii=False)),
+    }
+
+
+@app.post("/api/session")
+async def create_session(req: SessionRequest):
+    """Excel 插件入口：用当前工作表的数据（表头 + 数据行）建立会话。"""
+    if not req.columns:
+        raise HTTPException(400, "工作表没有可用的表头数据")
+    df = pd.DataFrame(req.rows, columns=req.columns)
+    session_id = uuid.uuid4().hex[:12]
+    SESSIONS[session_id] = {"df": df, "history": []}
+    return {
+        "session_id": session_id,
+        "filename": "当前工作表",
+        "shape": list(df.shape),
+        "columns": list(df.columns),
+        "dtypes": {k: str(v) for k, v in df.dtypes.items()},
         "preview": json.loads(df.head(100).to_json(orient="split", date_format="iso", force_ascii=False)),
     }
 
@@ -148,4 +166,16 @@ app.mount("/", StaticFiles(directory="static", html=True), name="static")
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+
+    host = os.getenv("HOST", "0.0.0.0")
+    port = int(os.getenv("PORT", "8443"))
+    certfile = os.getenv("SSL_CERTFILE")
+    keyfile = os.getenv("SSL_KEYFILE")
+
+    if certfile and keyfile and os.path.exists(certfile) and os.path.exists(keyfile):
+        # Excel 插件加载项要求 HTTPS
+        uvicorn.run(app, host=host, port=port, ssl_certfile=certfile, ssl_keyfile=keyfile)
+    else:
+        print("⚠️  未设置 SSL_CERTFILE/SSL_KEYFILE，以 HTTP 启动。"
+              "Excel 插件加载需要 HTTPS，请参考 addin/README 生成证书。")
+        uvicorn.run(app, host=host, port=port)
