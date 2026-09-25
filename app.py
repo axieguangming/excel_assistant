@@ -4,12 +4,14 @@ import json
 import uuid
 import time
 import io
+import threading
 
 import pandas as pd
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.concurrency import run_in_threadpool
 import re as _re
 from agent import agent_app
 from schemas import ChatRequest, SessionRequest
@@ -24,6 +26,15 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # Demo 用内存会话存储（生产环境请换 Redis）：session_id -> {df, history}
 SESSIONS: dict = {}
+
+# matplotlib 的 pyplot 全局状态不是线程安全的，且 agent 用的是进程级共享状态，
+# 因此把 agent 放到线程池里跑（避免阻塞事件循环）的同时用锁串行化。
+_AGENT_LOCK = threading.Lock()
+
+
+def _run_agent_serialized(df: pd.DataFrame, question: str, history: list) -> dict:
+    with _AGENT_LOCK:
+        return run_agent(df, question, history)
 
 # 上传请求处理
 @app.post("/api/upload")
@@ -109,7 +120,8 @@ async def chat(req: ChatRequest):
         raise HTTPException(404, "会话不存在，请重新上传文件")
 
     # 调用和运行agent，根据df，本次问题和聊天历史进行处理
-    final = run_agent(sess["df"], req.question, sess["history"])
+    # agent 内部是同步的 LLM + pandas 计算，放线程池执行，避免卡住事件循环
+    final = await run_in_threadpool(_run_agent_serialized, sess["df"], req.question, sess["history"])
     # 返回内容
     resp = {"answer": final.get("final_answer", ""), "code": final.get("code", ""),
             "has_result": False, "chart_url": final.get("chart_file", "")}
@@ -176,6 +188,6 @@ if __name__ == "__main__":
         # Excel 插件加载项要求 HTTPS
         uvicorn.run(app, host=host, port=port, ssl_certfile=certfile, ssl_keyfile=keyfile)
     else:
-        print("⚠️  未设置 SSL_CERTFILE/SSL_KEYFILE，以 HTTP 启动。"
+        print("未设置 SSL_CERTFILE/SSL_KEYFILE，以 HTTP 启动。"
               "Excel 插件加载需要 HTTPS，请参考 addin/README 生成证书。")
         uvicorn.run(app, host=host, port=port)

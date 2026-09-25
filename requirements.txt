@@ -4,10 +4,13 @@ langchain_core==1.6.3
 langchain_openai==1.6.2
 langgraph==1.2.11
 matplotlib>=3.7.0
-numpy==2.5.3
+# numpy 2.5+ 要求 Python >= 3.12；本项目用 3.11，2.4.6 是该版本线上最新
+numpy==2.4.6
 openpyxl>=3.1.0
 pandas==3.0.5
 pydantic==2.13.5
 python-dotenv==1.2.3
+# FastAPI 解析 multipart 表单/文件上传的硬依赖，缺失时 import fastapi 直接失败
+python-multipart==0.0.32
 pywebview>=5.0
 uvicorn==0.52.4
