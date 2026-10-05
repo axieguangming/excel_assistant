@@ -5,19 +5,17 @@ import json
 
 import numpy as np
 import pandas as pd
-from langchain_openai import ChatOpenAI
 
-try:
-    import matplotlib
-    matplotlib.use('Agg')
-    import matplotlib.pyplot as _plt
-    _HAS_MPL = True
-except ImportError:
-    _HAS_MPL = False
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as _plt
+
 from langchain_core.messages import SystemMessage, HumanMessage
 from langgraph.graph import StateGraph, END
 from load_model import init_llm
 from state import AgentState
+
+_HAS_MPL = True
 
 
 llm= init_llm()
