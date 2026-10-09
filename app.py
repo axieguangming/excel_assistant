@@ -1,10 +1,15 @@
 import io
+import ipaddress
 import json
 import os
 import re
+import shutil
+import subprocess
 import threading
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pandas as pd
 from fastapi import FastAPI, File, HTTPException, UploadFile
@@ -106,6 +111,77 @@ def run_agent(df: pd.DataFrame, question: str, history: list) -> dict:
     return agent_app.invoke(init_state, config={"recursion_limit": 30})
 
 
+def _ensure_local_https_certificates() -> tuple[str, str]:
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+
+    cert_dir = Path(__file__).resolve().parent / "addin" / "certs"
+    cert_path, key_path = cert_dir / "cert.pem", cert_dir / "key.pem"
+    cert_dir.mkdir(parents=True, exist_ok=True)
+
+    if not cert_path.is_file() or not key_path.is_file():
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        subject = issuer = x509.Name([
+            x509.NameAttribute(NameOID.COMMON_NAME, "localhost"),
+        ])
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        cert = (
+            x509.CertificateBuilder()
+            .subject_name(subject)
+            .issuer_name(issuer)
+            .public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now - timedelta(minutes=5))
+            .not_valid_after(now + timedelta(days=825))
+            .add_extension(
+                x509.SubjectAlternativeName([
+                    x509.DNSName("localhost"),
+                    x509.IPAddress(ipaddress.ip_address("127.0.0.1")),
+                ]),
+                critical=False,
+            )
+            .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+            .add_extension(
+                x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]),
+                critical=False,
+            )
+            .sign(key, hashes.SHA256())
+        )
+        cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+        key_path.write_bytes(key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        ))
+
+    certificate = x509.load_pem_x509_certificate(cert_path.read_bytes())
+    thumbprint = certificate.fingerprint(hashes.SHA1()).hex().upper()
+    certutil = shutil.which("certutil")
+    if certutil is None:
+        raise RuntimeError("找不到 Windows certutil.exe，无法自动信任本地 HTTPS 证书。")
+
+    verified = subprocess.run(
+        [certutil, "-user", "-verifystore", "Root", thumbprint],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if verified.returncode != 0:
+        installed = subprocess.run(
+            [certutil, "-user", "-addstore", "-f", "Root", str(cert_path)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if installed.returncode != 0:
+            details = (installed.stderr or installed.stdout).strip()
+            raise RuntimeError(f"无法将 localhost 证书加入当前用户的受信任根存储：{details}")
+
+    return str(cert_path), str(key_path)
+
+
 @app.post("/api/chat")
 async def chat(req: ChatRequest):
     sess = SESSIONS.get(req.session_id)
@@ -176,12 +252,19 @@ app.mount("/", StaticFiles(directory="static", html=True), name="static")
 if __name__ == "__main__":
     import uvicorn
 
-    host = os.getenv("HOST", "0.0.0.0")
+    host = os.getenv("HOST", "127.0.0.1")
     port = int(os.getenv("PORT", "8443"))
     certfile = os.getenv("SSL_CERTFILE")
     keyfile = os.getenv("SSL_KEYFILE")
 
-    if certfile and keyfile and os.path.exists(certfile) and os.path.exists(keyfile):
+    if bool(certfile) != bool(keyfile):
+        raise RuntimeError("SSL_CERTFILE 和 SSL_KEYFILE 必须同时设置。")
+
+    if certfile and keyfile:
+        uvicorn.run(app, host=host, port=port, ssl_certfile=certfile, ssl_keyfile=keyfile)
+    elif os.name == "nt":
+        certfile, keyfile = _ensure_local_https_certificates()
+        print("已自动配置 localhost HTTPS 证书。")
         uvicorn.run(app, host=host, port=port, ssl_certfile=certfile, ssl_keyfile=keyfile)
     else:
         print("未设置 SSL_CERTFILE/SSL_KEYFILE，以 HTTP 启动。Excel 插件加载需要 HTTPS，请参考 addin/README 生成证书。")

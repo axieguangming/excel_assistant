@@ -23,9 +23,9 @@
 
 - 清单：`addin/manifest.xml`（Excel 2021 标准版，传统 v1.1 schema）
 - 任务窗格：`static/addin/taskpane.html`（Office.js）
-- 证书/侧加载/使用说明：见 **[addin/README.md](./addin/README.md)**
+- Windows 首次运行 `python app.py` 会自动生成并信任本地 HTTPS 证书；侧加载说明见 **[addin/README.md](./addin/README.md)**
 
-简要步骤：`bash addin/make_cert.sh` → 管理员信任证书 → `export SSL_CERTFILE/SSL_KEYFILE` 后 `python app.py`（https://localhost:8443）→ Excel「受信任的目录」侧加载 manifest。
+简要步骤：`python app.py`（首次自动配置 HTTPS）→ Excel「受信任的目录」侧加载 manifest。
 
 ## 运行展示
 - 初始页面
@@ -41,4 +41,3 @@
 
 ## ⚖️ 许可声明
 本项目采用自定义许可，仅限学习交流使用，禁止商业用途。详见 [LICENSE](./LICENSE.txt)。
-

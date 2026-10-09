@@ -16,35 +16,24 @@
 
 ---
 
-## 1. 生成并信任 HTTPS 证书（一次性）
-Excel 加载项的页面必须是 **HTTPS**。本地开发用自签名证书：
+## 1. HTTPS 证书（自动配置）
+Excel 加载项的页面必须是 **HTTPS**。Windows 下首次运行 `python app.py` 时，
+程序会自动生成 localhost 自签名证书并加入当前 Windows 用户的受信任根证书存储；
+后续启动会复用 `addin/certs/cert.pem` 和 `addin/certs/key.pem`，无需重复生成或手动信任。
 
-```bash
-# Git Bash，在项目根目录
-bash addin/make_cert.sh
-```
-
-生成后，用**管理员 PowerShell**信任该证书（否则 Excel 打不开）：
-
-```powershell
-certutil -addstore -f ROOT addin\certs\cert.pem
-```
-
-> 验证：浏览器访问 `https://localhost:8443` 显示“安全/无警告”即成功（证书被系统信任）。
+证书私钥保存在本机项目目录，请勿分享或提交。若证书文件被删除或过期，下次启动会重新生成并再次信任。
 
 ---
 
-## 2. 以 HTTPS 启动后端
-在 **conda 环境 excel_assistant** 中：
+## 2. 启动后端
+在项目根目录的 PowerShell 中运行：
 
-```bash
-conda activate excel_assistant
-export SSL_CERTFILE=addin/certs/cert.pem
-export SSL_KEYFILE=addin/certs/key.pem
-python app.py          # 默认 https://0.0.0.0:8443
+```powershell
+python app.py
 ```
 
-（不设 SSL 变量会退回 HTTP，加载项将无法加载，仅普通网页版可用。）
+程序默认仅监听本机并以 HTTPS 提供服务：`https://localhost:8443`。如果需要使用已有证书，
+可同时设置 `SSL_CERTFILE` 和 `SSL_KEYFILE` 覆盖自动配置；不要将未鉴权服务直接暴露到局域网或公网。
 
 ---
 
