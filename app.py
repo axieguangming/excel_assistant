@@ -18,13 +18,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from agent import agent_app
+from app_paths import DATA_DIR, STATIC_DIR
+from agent import invoke_agent
+from load_model import ModelConfigurationError
 from schemas import ChatRequest, SessionRequest
 
 app = FastAPI(title="Excel AI 助手")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-UPLOAD_DIR, OUTPUT_DIR = "uploads", "outputs"
+UPLOAD_DIR = str(DATA_DIR / "uploads")
+OUTPUT_DIR = str(DATA_DIR / "outputs")
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -50,18 +54,25 @@ def _session_payload(df: pd.DataFrame, filename: str = "当前工作表") -> dic
 
 @app.post("/api/upload")
 async def upload(file: UploadFile = File(...)):
-    if not file.filename.lower().endswith((".xlsx", ".xls", ".csv")):
+    filename = os.path.basename(file.filename or "")
+    if not filename.lower().endswith((".xlsx", ".xls", ".csv")):
         raise HTTPException(400, "仅支持 xlsx / xls / csv 文件")
 
-    content = await file.read()
+    content = await file.read(MAX_UPLOAD_BYTES + 1)
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, "文件大小不能超过 50 MB。")
     session_id = uuid.uuid4().hex[:12]
-    path = os.path.join(UPLOAD_DIR, f"{session_id}_{file.filename}")
+    path = os.path.join(UPLOAD_DIR, f"{session_id}_{filename}")
     with open(path, "wb") as f:
         f.write(content)
 
-    df = pd.read_csv(path) if path.endswith(".csv") else pd.read_excel(path)
+    try:
+        df = pd.read_csv(path) if path.lower().endswith(".csv") else pd.read_excel(path)
+    except (ImportError, OSError, ValueError) as error:
+        os.remove(path)
+        raise HTTPException(400, f"无法读取该文件：{error}") from error
     SESSIONS[session_id] = {"df": df, "history": []}
-    payload = _session_payload(df, file.filename)
+    payload = _session_payload(df, filename)
     payload["session_id"] = session_id
     return payload
 
@@ -100,15 +111,18 @@ def run_agent(df: pd.DataFrame, question: str, history: list) -> dict:
         "df_info": build_df_info(df),
         "question": question,
         "history": history,
+        "messages": [],
+        "current_df": df.copy(),
+        "plans": [],
+        "tool_steps": 0,
+        "turns": 0,
         "code": "",
-        "error": "",
-        "retries": 0,
         "result_df": None,
-        "answer_text": "",
         "final_answer": "",
         "chart_file": "",
+        "user_prompt": "",
     }
-    return agent_app.invoke(init_state, config={"recursion_limit": 30})
+    return invoke_agent(init_state)
 
 
 def _ensure_local_https_certificates() -> tuple[str, str]:
@@ -188,7 +202,15 @@ async def chat(req: ChatRequest):
     if not sess:
         raise HTTPException(404, "会话不存在，请重新上传文件")
 
-    final = await run_in_threadpool(_run_agent_serialized, sess["df"], req.question, sess["history"])
+    try:
+        final = await run_in_threadpool(
+            _run_agent_serialized,
+            sess["df"],
+            req.question,
+            sess["history"],
+        )
+    except ModelConfigurationError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
     resp = {
         "answer": final.get("final_answer", ""),
         "code": final.get("code", ""),
@@ -228,7 +250,10 @@ async def chat(req: ChatRequest):
 
 @app.get("/api/download/{filename}")
 async def download(filename: str):
-    path = os.path.join(OUTPUT_DIR, filename)
+    safe_filename = os.path.basename(filename)
+    if safe_filename != filename:
+        raise HTTPException(400, "文件名无效")
+    path = os.path.join(OUTPUT_DIR, safe_filename)
     if not os.path.exists(path):
         raise HTTPException(404, "文件不存在")
     return FileResponse(
@@ -240,13 +265,16 @@ async def download(filename: str):
 
 @app.get("/api/chart/{filename}")
 async def serve_chart(filename: str):
-    path = os.path.join(OUTPUT_DIR, filename)
+    safe_filename = os.path.basename(filename)
+    if safe_filename != filename:
+        raise HTTPException(400, "文件名无效")
+    path = os.path.join(OUTPUT_DIR, safe_filename)
     if not os.path.exists(path):
         raise HTTPException(404, "图表不存在")
     return FileResponse(path, media_type="image/png")
 
 
-app.mount("/", StaticFiles(directory="static", html=True), name="static")
+app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
 
 
 if __name__ == "__main__":
@@ -261,11 +289,25 @@ if __name__ == "__main__":
         raise RuntimeError("SSL_CERTFILE 和 SSL_KEYFILE 必须同时设置。")
 
     if certfile and keyfile:
-        uvicorn.run(app, host=host, port=port, ssl_certfile=certfile, ssl_keyfile=keyfile)
+        uvicorn.run(
+            app,
+            host=host,
+            port=port,
+            ssl_certfile=certfile,
+            ssl_keyfile=keyfile,
+            timeout_graceful_shutdown=5,
+        )
     elif os.name == "nt":
         certfile, keyfile = _ensure_local_https_certificates()
         print("已自动配置 localhost HTTPS 证书。")
-        uvicorn.run(app, host=host, port=port, ssl_certfile=certfile, ssl_keyfile=keyfile)
+        uvicorn.run(
+            app,
+            host=host,
+            port=port,
+            ssl_certfile=certfile,
+            ssl_keyfile=keyfile,
+            timeout_graceful_shutdown=5,
+        )
     else:
         print("未设置 SSL_CERTFILE/SSL_KEYFILE，以 HTTP 启动。Excel 插件加载需要 HTTPS，请参考 addin/README 生成证书。")
-        uvicorn.run(app, host=host, port=port)
+        uvicorn.run(app, host=host, port=port, timeout_graceful_shutdown=5)

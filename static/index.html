@@ -373,6 +373,7 @@
         <div class="big-icon">📁</div>
         <div>点击或拖拽上传 Excel / CSV 文件</div>
         <div class="tip">支持 .xlsx / .xls / .csv 格式</div>
+        <div class="tip">使用远程 AI 时，表格和提问会发送至服务端及其模型服务商</div>
       </div>
     </div>
     <input type="file" id="file-input" hidden accept=".xlsx,.xls,.csv">
@@ -589,7 +590,7 @@ async function send() {
     if (d.code) {
       const det = document.createElement('details');
       const sm = document.createElement('summary');
-      sm.textContent = '查看生成的分析代码';
+      sm.textContent = '查看结构化操作计划';
       const pre = document.createElement('pre');
       pre.textContent = d.code;
       det.append(sm, pre);

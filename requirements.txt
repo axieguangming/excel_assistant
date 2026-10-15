@@ -14,4 +14,5 @@ python-dotenv==1.2.3
 # FastAPI 解析 multipart 表单/文件上传的硬依赖，缺失时 import fastapi 直接失败
 python-multipart==0.0.32
 pywebview>=5.0
+xlrd>=2.0.1
 uvicorn==0.52.4

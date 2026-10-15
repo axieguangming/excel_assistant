@@ -89,7 +89,7 @@ function addMsg(role, text, code){
   div.textContent = text;
   if (code){
     const d = document.createElement('details');
-    const s = document.createElement('summary'); s.textContent = '查看生成的代码';
+    const s = document.createElement('summary'); s.textContent = '查看结构化操作计划';
     const p = document.createElement('pre'); p.textContent = code;
     d.append(s, p); div.appendChild(d);
   }

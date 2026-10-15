@@ -1,43 +1,44 @@
 # Excel AI 助手
 
-简要说明：一个网页端的Excel助手，允许用户上传 Excel/CSV 文件并提问，后端基于LangGraph框架构建了excel agent，agent能够根据用户上传的表格和提问进行思考和分析，生成代码，并调用代码执行工具执行，不断循环直到任务完成。该应用还支持表格的可视化，以及生成结果的可视化。
+Windows 桌面版 Excel 数据助手。用户上传最大 50 MB 的 `.xlsx`、`.xls` 或 `.csv` 文件后，可以用自然语言请求筛选、排序、分组汇总、Top N、去重、缺失值填充、描述统计和基础图表。数据处理通过经过校验的工具执行，不运行模型生成的 Python 代码。
 
-主要功能：
-- 上传 xlsx / xls / csv 文件并返回表结构、预览和 session_id（/api/upload）。
-- 基于上传的表格与会话历史进行问答/数据处理（/api/chat），可返回文本回答、可执行代码片段和结果表（保存为新的 Excel 并提供下载链接）。
-- 下载处理结果的 Excel 文件（/api/download/{filename}）。
-- 提供静态前端页面入口（static 目录）。
+## Windows 桌面版
 
-## 🖥️ 桌面端 + 本地模型（v0.9，当前方向）
-项目正从「网页 / Excel 加载项」转向 **PC 桌面应用**，以便后续把 LLM 换成**本地微调小模型**（数据不出本机、可离线）。
+桌面客户端由 `desktop.py` 启动本地 FastAPI 服务并在 pywebview 窗口中显示界面。客户端直接通过 HTTPS 调用远程模型 API，不需要单独部署本项目的 API 后端。
 
-- 桌面外壳：`desktop.py`（pywebview + 后台线程内嵌 FastAPI），启动：`pip install pywebview` 后 `python desktop.py`。
-- LLM 提供方开关：`.env` 里 `LLM_PROVIDER=remote|local`，本地默认走 Ollama 的 OpenAI 兼容接口（`load_model.py`）。
-- 微调语料自动采集：`agent.py` 把每次 `(prompt, code, ok, err)` 写入 `data/codegen_log.jsonl`。
-- 完整说明（Ollama CPU 部署、模型选型、LLaMA-Factory→GGUF 微调回路）：见 **[LOCAL_MODEL.md](./LOCAL_MODEL.md)**。
+**发布密钥风险：** 按当前选定方案，构建时提供的模型 API Key 会写入安装包的 `llm_config.json`。安装包使用者可以提取该密钥并消耗账户额度、产生费用；密钥不能视为保密。发布者应使用专用且限额的 API Key，并配置服务商侧的额度/速率限制。不要把真实密钥提交到 Git、聊天或公开日志中。
 
-## 🧩 Excel 加载项（v0.9，方案1，已暂缓）
-> Excel 2021 **标准版**不支持侧加载外部加载项（无「显示在菜单」/「上传我的加载项」，需 Windows 开发者模式或企业版），故此方案暂缓，代码保留在仓库中。
+### 构建 Windows 安装包
 
-除了网页版，还把智能体做成了 **Microsoft Excel 加载项（Office Add-in）**：在真实 Excel 里用自然语言分析**当前工作表**，结果写入**新工作表**并生成 **Excel 原生可编辑图表**。后端（FastAPI + LangGraph）完全复用，仅新增任务窗格前端与 `POST /api/session`（用工作表数据建会话）。
+构建机需要 64 位 Python 3.12、项目依赖、`requirements-build.txt` 中的 PyInstaller，以及 Inno Setup 6。通过构建环境变量或项目根目录未提交的 `.env` 提供配置：
 
-- 清单：`addin/manifest.xml`（Excel 2021 标准版，传统 v1.1 schema）
-- 任务窗格：`static/addin/taskpane.html`（Office.js）
-- Windows 首次运行 `python app.py` 会自动生成并信任本地 HTTPS 证书；侧加载说明见 **[addin/README.md](./addin/README.md)**
+```ini
+DEEPSEEK_API_KEY=
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-v4-flash
+```
 
-简要步骤：`python app.py`（首次自动配置 HTTPS）→ Excel「受信任的目录」侧加载 manifest。
+然后执行：
 
-## 运行展示
-- 初始页面
-![替代文字](./运行展示/初始化页面.png)
-- 上传excel
-![替代文字](./运行展示/上传表格并展示.png)
-- 数据筛选
-![替代文字](./运行展示/数据筛选.png)
-- 计算结果并展示
-![替代文字](./运行展示/计算并添加结果.png)
-- 支持代码查看
-![替代文字](./运行展示/支持代码查看.png)
+```powershell
+python -m pip install -r requirements.txt -r requirements-build.txt
+.\packaging\build_windows.ps1 -PythonPath "D:\path\to\python.exe"
+```
 
-## ⚖️ 许可声明
-本项目采用自定义许可，仅限学习交流使用，禁止商业用途。详见 [LICENSE](./LICENSE.txt)。
+配置生成器要求有效 API Key 和 HTTPS Base URL；不会将密钥打印到控制台。安装包输出到 `release/`。用户电脑需安装 [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)；Windows 11 通常已包含该运行时。当前安装包尚未配置代码签名证书，公开发布时 Windows SmartScreen 可能显示未知发布者警告。
+
+正式发布前还需配置代码签名、隐私政策和模型服务商披露。用户上传的工作簿及提问会从本机直接发送给配置的模型服务商，请勿上传不应离开本机的敏感数据。桌面客户端本地生成的数据保存在 `%LOCALAPPDATA%\ExcelAssistant`；桌面发行版会禁用训练样本记录。
+
+## 开发运行
+
+远程模型开发配置可放在项目根目录的 `.env` 中（不要提交真实密钥），然后运行：
+
+```powershell
+python desktop.py
+```
+
+网页调试入口仍可通过 `python app.py` 启动。通过 `LLM_PROVIDER=local` 可在开发环境使用 Ollama 等本地 OpenAI 兼容模型。Excel 加载项相关说明见 [addin/README.md](./addin/README.md)。
+
+## 许可
+
+本软件仅限个人、非商业用途；允许转发版权方发布的未修改官方安装包，不允许商业使用、修改或发布衍生版本。详见 [LICENSE.txt](./LICENSE.txt)。

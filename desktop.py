@@ -1,49 +1,110 @@
-"""桌面端启动器：在后台线程跑 uvicorn，再用 pywebview 打开本地页面。
+"""Windows desktop launcher for the Excel AI assistant."""
 
-运行：python desktop.py
-依赖：pip install pywebview（Windows 使用系统自带的 WebView2 内核）
-"""
+from __future__ import annotations
+
 import os
+from pathlib import Path
 import threading
 import time
 
 import uvicorn
 import webview
 
-from app import app
+os.environ["EXCEL_ASSISTANT_DESKTOP"] = "1"
+
+from app_paths import get_data_dir
+
+os.environ["EXCEL_ASSISTANT_DATA_DIR"] = str(get_data_dir())
 
 HOST = "127.0.0.1"
-PORT = int(os.getenv("DESKTOP_PORT", "8000"))
-URL = f"http://{HOST}:{PORT}"
+STARTUP_TIMEOUT_SECONDS = 15
+SHUTDOWN_TIMEOUT_SECONDS = 8
 
 
-def _start_server():
-    config = uvicorn.Config(app, host=HOST, port=PORT, log_level="warning")
-    server = uvicorn.Server(config)
-    server.run()
+def _show_error(message: str) -> None:
+    if os.name == "nt":
+        import ctypes
+
+        ctypes.windll.user32.MessageBoxW(None, message, "Excel AI 助手", 0x10)
+    else:
+        print(message)
 
 
-def main():
-    server_thread = threading.Thread(target=_start_server, daemon=True)
-    server_thread.start()
+def _run_server(server: uvicorn.Server, errors: list[Exception]) -> None:
+    try:
+        server.run()
+    except Exception as error:
+        errors.append(error)
+        raise
 
-    # 等服务就绪后再开窗口
-    import urllib.request
-    for _ in range(50):
-        try:
-            urllib.request.urlopen(URL, timeout=0.5)
-            break
-        except Exception:
-            time.sleep(0.2)
 
-    webview.create_window(
-        "Excel AI 助手",
-        URL,
-        width=1280,
-        height=820,
-        min_size=(900, 600),
-    )
-    webview.start()
+def _stop_server(server: uvicorn.Server, thread: threading.Thread) -> None:
+    server.should_exit = True
+    thread.join(timeout=SHUTDOWN_TIMEOUT_SECONDS)
+    if thread.is_alive():
+        raise RuntimeError("本地服务未能在规定时间内关闭。")
+
+
+def main() -> None:
+    server: uvicorn.Server | None = None
+    server_thread: threading.Thread | None = None
+    try:
+        port = int(os.getenv("DESKTOP_PORT", "8000"))
+        if not 1 <= port <= 65535:
+            raise ValueError("DESKTOP_PORT 必须是 1 到 65535 之间的端口号。")
+
+        data_dir = Path(os.environ["EXCEL_ASSISTANT_DATA_DIR"])
+        data_dir.mkdir(parents=True, exist_ok=True)
+        from app import app
+
+        config = uvicorn.Config(
+            app,
+            host=HOST,
+            port=port,
+            log_level="warning",
+            timeout_graceful_shutdown=5,
+        )
+        server = uvicorn.Server(config)
+        errors: list[Exception] = []
+        server_thread = threading.Thread(
+            target=_run_server,
+            args=(server, errors),
+            name="excel-assistant-api",
+            daemon=True,
+        )
+        server_thread.start()
+
+        deadline = time.monotonic() + STARTUP_TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            if server.started:
+                break
+            if not server_thread.is_alive():
+                if errors:
+                    raise RuntimeError(f"本地服务启动失败：{errors[0]}") from errors[0]
+                raise RuntimeError(
+                    f"无法启动本地服务。端口 {port} 可能已被其他程序占用。"
+                )
+            time.sleep(0.1)
+        else:
+            raise TimeoutError("本地服务在 15 秒内未就绪。")
+
+        window = webview.create_window(
+            "Excel AI 助手",
+            f"http://{HOST}:{port}",
+            width=1280,
+            height=820,
+            min_size=(900, 600),
+        )
+        window.events.closed += lambda: setattr(server, "should_exit", True)
+        webview.start()
+    except Exception as error:
+        if server is not None and server_thread is not None:
+            _stop_server(server, server_thread)
+        _show_error(str(error))
+        raise
+    else:
+        if server is not None and server_thread is not None:
+            _stop_server(server, server_thread)
 
 
 if __name__ == "__main__":

@@ -3,8 +3,10 @@ __pycache__/
 *.pyc
 build/
 dist/
+release/
 outputs/
 uploads/
 addin/certs/
 vibe_images/
 data/
+llm_config.json

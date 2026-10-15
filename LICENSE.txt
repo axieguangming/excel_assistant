@@ -1,11 +1,22 @@
-版权所有 (c) 2026 Mike
+Excel AI Assistant Personal Use License
+Copyright (c) 2026 Mike
 
-本项目仅供学习交流与作品展示之用。
+Permission is granted, free of charge, to any individual to use the unmodified
+software for personal, non-commercial purposes.
 
-- ✅ 允许：阅读源码、学习参考、 fork 用于个人学习
-- ❌ 禁止：商业用途、二次分发、修改后发布、作为课程/培训素材
+You may share the original, unmodified installer published by the copyright
+owner, provided this license and copyright notice remain with it.
 
-如需商业授权或其他合作，请联系：1716154861@qq.com
+You may not:
+- use the software for commercial purposes;
+- modify, adapt, translate, or create derivative works of the software;
+- distribute modified versions or derivative works;
+- sell, sublicense, or provide the software as part of a paid product or
+  service.
 
-本软件按"原样"提供，不提供任何明示或暗示的保证。
-在任何情况下，作者均不对因使用本软件而产生的任何索赔、损害或其他责任负责。
+The software is provided "as is", without warranty of any kind, express or
+implied. To the extent permitted by law, the copyright owner is not liable for
+any claim, damages, or other liability arising from use of the software.
+
+For licensing questions or other arrangements, contact:
+1716154861@qq.com
