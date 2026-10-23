@@ -92,16 +92,18 @@ class PipelineTests(unittest.TestCase):
 
     def test_replay_matches_recorded_step_results(self):
         with tempfile.TemporaryDirectory() as directory:
+            index_path = save_tables(self.tables, Path(directory) / "tables")
+            self.assertTrue(index_path.is_file())
+            restored = load_tables(Path(directory) / "tables")
+
+            # 与 CLI 一致：用 Excel 往返后的表格建样本。
             result = build_dataset(
-                self.tables,
+                restored,
                 proposer=TemplateChainProposer(),
                 writer=TemplateQuestionWriter(),
                 config=self.config,
                 out_dir=directory,
             )
-            index_path = save_tables(self.tables, Path(directory) / "tables")
-            self.assertTrue(index_path.is_file())
-            restored = load_tables(Path(directory) / "tables")
 
         report = replay_samples(
             result.samples, {table.table_id: table for table in restored}
@@ -109,6 +111,34 @@ class PipelineTests(unittest.TestCase):
 
         self.assertEqual(report["mismatches"], [])
         self.assertEqual(report["checked"], len(result.samples))
+
+    def test_samples_are_built_on_excel_round_tripped_tables(self):
+        """真值必须基于用户上传 Excel 后读到的数据，而不是内存中的生成结果。"""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            save_tables(self.tables, root / "tables")
+            restored = load_tables(root / "tables")
+
+            result = build_dataset(
+                restored,
+                proposer=TemplateChainProposer(),
+                writer=TemplateQuestionWriter(),
+                config=self.config,
+                out_dir=root,
+            )
+
+            self.assertTrue(any((root / "tables").glob("*.xlsx")))
+            self.assertGreater(len(result.samples), 0)
+            sample = result.samples[0]
+            artifact = root / sample["expected_result"]["artifact"]
+            self.assertTrue(artifact.is_file())
+
+            # 样本记录的行数与 Excel 文件实际行数一致。
+            table = next(t for t in restored if t.table_id == sample["workbook_id"])
+            self.assertEqual(
+                sample["step_results"][0]["rows"],
+                int(len(table.frame)),
+            )
 
     def test_build_result_is_written_as_jsonl(self):
         with tempfile.TemporaryDirectory() as directory:

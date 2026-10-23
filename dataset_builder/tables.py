@@ -242,24 +242,80 @@ def generate_tables(
     return tables
 
 
-def save_tables(tables: Iterable[SyntheticTable], directory: str | Path) -> Path:
-    """把表格写成 UTF-8 CSV，并记录列类型以便回放时还原 dtype。"""
+def _excel_sheet_name(name: str) -> str:
+    """Excel 工作表名不能含 []:*?/\\ 且不超过 31 个字符。"""
+    cleaned = "".join("_" if char in "[]:*?/\\" else char for char in name).strip()
+    return (cleaned or "工作表")[:31]
+
+
+def _write_table(
+    frame: pd.DataFrame,
+    path: Path,
+    *,
+    table_format: str,
+    sheet_name: str,
+) -> None:
+    if table_format == "xlsx":
+        with pd.ExcelWriter(path, engine="openpyxl") as writer:
+            frame.to_excel(writer, index=False, sheet_name=sheet_name)
+    elif table_format == "csv":
+        frame.to_csv(path, index=False, encoding="utf-8-sig")
+    else:
+        raise ValueError(f"不支持的表格格式：{table_format}")
+
+
+def _read_table(path: Path, table_format: str, sheet_name: str) -> pd.DataFrame:
+    """按格式读回表格，与用户上传 Excel 时的读取路径保持一致。"""
+    if table_format == "xlsx":
+        return pd.read_excel(path, sheet_name=sheet_name)
+    return pd.read_csv(path, encoding="utf-8-sig")
+
+
+def save_tables(
+    tables: Iterable[SyntheticTable],
+    directory: str | Path,
+    *,
+    table_format: str = "xlsx",
+) -> Path:
+    """把表格写成 Excel（默认）或 CSV，并记录写盘后的真实列类型。
+
+    索引中的列类型取自**写盘后重新读取**的表格，而不是内存中的生成结果，
+    因为 Excel 往返会改变部分 dtype（例如可空整数变成浮点）。
+    """
+    if table_format not in {"xlsx", "csv"}:
+        raise ValueError(f"不支持的表格格式：{table_format}")
+
     root = Path(directory)
     root.mkdir(parents=True, exist_ok=True)
     index_entries: list[dict[str, Any]] = []
 
     for table in tables:
-        path = root / f"{table.table_id}.csv"
-        table.frame.to_csv(path, index=False, encoding="utf-8-sig")
+        sheet_name = _excel_sheet_name(table.sheet)
+        path = root / f"{table.table_id}.{table_format}"
+        _write_table(
+            table.frame,
+            path,
+            table_format=table_format,
+            sheet_name=sheet_name,
+        )
+
+        stored = _read_table(path, table_format, sheet_name)
         index_entries.append(
             {
                 "table_id": table.table_id,
                 "domain": table.domain,
                 "sheet": table.sheet,
+                "sheet_name": sheet_name,
+                "format": table_format,
                 "path": path.name,
-                "rows": int(len(table.frame)),
+                "rows": int(len(stored)),
                 "columns": [
-                    {"name": str(name), "kind": column_kind(table.frame[name])}
+                    {
+                        # kind 记录生成时的逻辑类型，用于 CSV 回读时还原日期等类型。
+                        "name": str(name),
+                        "kind": column_kind(table.frame[name]),
+                        "stored_kind": column_kind(stored[name]),
+                    }
                     for name in table.frame.columns
                 ],
                 "source": SOURCE,
@@ -286,12 +342,16 @@ def load_tables(directory: str | Path) -> list[SyntheticTable]:
 
     tables: list[SyntheticTable] = []
     for entry in entries:
-        frame = pd.read_csv(root / entry["path"], encoding="utf-8-sig")
-        for column in entry.get("columns", []):
-            if column.get("kind") == "datetime" and column["name"] in frame.columns:
-                frame[column["name"]] = pd.to_datetime(
-                    frame[column["name"]], errors="coerce"
-                )
+        table_format = entry.get("format", "csv")
+        sheet_name = entry.get("sheet_name") or _excel_sheet_name(entry.get("sheet", "工作表"))
+        frame = _read_table(root / entry["path"], table_format, sheet_name)
+        if table_format == "csv":
+            # CSV 不保留类型，按索引里的 datetime 标记还原。
+            for column in entry.get("columns", []):
+                if column.get("kind") == "datetime" and column["name"] in frame.columns:
+                    frame[column["name"]] = pd.to_datetime(
+                        frame[column["name"]], errors="coerce"
+                    )
         tables.append(
             SyntheticTable(
                 table_id=entry["table_id"],

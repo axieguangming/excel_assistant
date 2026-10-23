@@ -51,7 +51,7 @@ Agent 当前最大模型决策轮数为 `MAX_AGENT_TURNS = 10`（见 [agent.py](
 
 ### 2.2 仿真生成表格（当前实现）
 
-按常见业务场景生成表格与任务，可控覆盖：
+按常见业务场景生成表格与任务，输出为 `.xlsx`。可控覆盖：
 
 - 日期、数值、分类文本、混合类型列；
 - 空值、重复行、异常值、全空列；
@@ -89,9 +89,11 @@ Agent 当前最大模型决策轮数为 `MAX_AGENT_TURNS = 10`（见 [agent.py](
 
 ### 3.1 表格准备
 
-- 统一转换为 CSV/XLSX 并载入内部 DataFrame。
-- 保存工作簿 ID、工作表名、列类型、行列数、缺失率等元信息。
+- 表格以 **`.xlsx`（Excel）为默认格式**写盘，与真实用户上传的文件一致；CSV 仅作为可选格式保留。
+- 建样本前会把表格**从 Excel 文件重新读取**，用读回后的数据执行操作链。这样真值反映的是用户上传该文件后实际拿到的数据，而不是内存中的生成结果——Excel 往返会改变部分类型（例如带空值的整数列变成浮点）。
+- 保存工作簿 ID、工作表名、列类型、行列数、缺失率等元信息；索引同时记录生成时的逻辑类型（`kind`）与写盘后读回的类型（`stored_kind`）。
 - 传给模型的上下文只包含表头、字段类型和少量脱敏样例，不必传整张真实表。
+- 当前每个工作簿只包含一个工作表，因为应用上传时只读取第一个工作表；多工作表工作簿的处理尚未纳入数据集范围。
 
 ### 3.2 操作链生成
 
@@ -166,6 +168,9 @@ python -m dataset_builder.cli build --out datasets --table-count 30 --per-table 
 # 复用已有表格，只用模型生成样本
 python -m dataset_builder.cli build --out datasets --tables-dir datasets/tables --per-table 8 --proposer llm
 
+# 需要 CSV 而不是 Excel 时显式指定
+python -m dataset_builder.cli build --out datasets --table-format csv
+
 # 回放校验：重新执行期望操作链，核对行数与列名
 python -m dataset_builder.cli replay --samples datasets/samples.jsonl --tables-dir datasets/tables
 ```
@@ -174,34 +179,36 @@ python -m dataset_builder.cli replay --samples datasets/samples.jsonl --tables-d
 
 ```
 datasets/
-  tables/index.json        # 表格索引、列类型、来源许可
-  tables/<table_id>.csv    # 仿真表格
-  samples.jsonl            # 通过的样本
-  rejects.jsonl            # 被拒样本及原因
-  results/<sample_id>.csv  # 最终结果真值
+  tables/index.json           # 表格索引、工作表名、列类型、来源许可
+  tables/<table_id>.xlsx      # 仿真表格（Excel）
+  samples.jsonl               # 通过的样本
+  rejects.jsonl               # 被拒样本及原因
+  results/<sample_id>.csv     # 最终结果真值
   splits/{train,val,test}.jsonl
-  report.json              # 覆盖度、拒绝原因、分区计数
+  report.json                 # 覆盖度、拒绝原因、分区计数
 ```
 
 被拒原因：`invalid_chain`（工具或参数不合法）、`execution_failed`（列不存在、类型不适用等）、`question_failed`（问题生成失败）、`question_mismatch`（反向解析失败或执行结果与真值不一致）。
 
 ### 3.9 示例运行结果
 
-用远程模型在 12 张仿真表上生成的结果：
+用远程模型在 12 张仿真 Excel 表上生成的结果：
 
 | 指标 | 数值 |
 | --- | --- |
+| 表格 | 12 个 `.xlsx` 文件 |
 | 样本 | 96 条（全部 `auto_passed` / `llm_verified`） |
-| 拒绝 | 2 条（1 条结果不一致、1 条解析链不可执行） |
+| 拒绝 | 3 条（均为 `describe_data` 之后绘图，汇总结果中已无原字段） |
 | 工具类别 | 9/9 全覆盖 |
 | 难度 | simple 9 / multi_step 86 / complex 1 |
 | 分区 | train 80 / val 8 / test 8 |
 | 回放校验 | 96 条全部一致 |
 
-生成过程中的两个实测结论：
+生成过程中的三个实测结论：
 
 1. **按链文本比对会把大量有效样本误判为不一致**：模型给汇总列起别名（如 `name="销售额合计"`）时，反向解析不会复现该别名。改为执行结果比对后，单表产出率从 17% 提升到 80% 以上。
 2. **解析器容易在汇总后继续引用原始列名**，导致链不可执行。在解析提示词中说明汇总列名规则（`字段_函数` 或 `name`）后，该类失败基本消失。
+3. **CSV 与 Excel 的读回结果不同**：Excel 往返会把带空值的整数列变成浮点列。因此真值必须在 Excel 读回的表格上计算，否则样本与用户实际看到的数据不一致。
 
 这批数据只是小规模验证，尚未达到 6.1 的试点规模，也未经人工审核。
 

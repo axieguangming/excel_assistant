@@ -41,7 +41,7 @@ python desktop.py
 
 ## 数据集构建
 
-仓库提供用于微调与评测的离线数据集流水线，当前只生成仿真表格：
+仓库提供用于微调与评测的离线数据集流水线，当前只生成仿真表格，默认输出 `.xlsx`（与用户实际上传的 Excel 文件一致）：
 
 ```powershell
 # 离线模板生成，不调用模型
@@ -54,7 +54,7 @@ python -m dataset_builder.cli build --out datasets --table-count 30 --per-table 
 python -m dataset_builder.cli replay --samples datasets/samples.jsonl --tables-dir datasets/tables
 ```
 
-输出包含表格索引、样本、结果真值、拒绝原因、按工作簿分组的训练/验证/测试划分与覆盖度报告。详见 [docs/dataset-plan.md](./docs/dataset-plan.md)。`datasets/` 为本地生成目录，不纳入版本控制。
+输出包含表格索引、样本、结果真值、拒绝原因、按工作簿分组的训练/验证/测试划分与覆盖度报告。样本真值在 **Excel 读回后的表格**上计算，因此与用户上传同一文件后得到的数据一致。详见 [docs/dataset-plan.md](./docs/dataset-plan.md)。`datasets/` 为本地生成目录，不纳入版本控制。
 
 ## 文档
 

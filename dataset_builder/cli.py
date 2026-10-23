@@ -62,13 +62,19 @@ def _cmd_build(args: argparse.Namespace) -> int:
     if args.tables_dir:
         tables = load_tables(args.tables_dir)
     else:
-        tables = generate_tables(
+        generated = generate_tables(
             args.table_count,
             seed=args.seed,
             domains=args.domains or None,
         )
-        index_path = save_tables(tables, out_dir / "tables")
+        index_path = save_tables(
+            generated,
+            out_dir / "tables",
+            table_format=args.table_format,
+        )
         print(f"表格索引：{index_path}")
+        # 用写盘后读回的表格建样本，真值与用户上传该文件后看到的数据完全一致。
+        tables = load_tables(out_dir / "tables")
 
     proposer, writer, parser = _components(args.proposer)
     result = build_dataset(
@@ -126,6 +132,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="限定仿真场景；默认轮转全部场景",
     )
     build.add_argument("--tables-dir", help="复用已有表格目录而不是重新生成")
+    build.add_argument(
+        "--table-format",
+        choices=("xlsx", "csv"),
+        default="xlsx",
+        help="生成表格的文件格式；默认 xlsx，与真实用户上传的 Excel 一致",
+    )
     build.add_argument("--per-table", type=int, default=6, help="每张表的目标样本数")
     build.add_argument("--max-steps", type=int, default=4, help="操作链最大步数")
     build.add_argument("--max-attempts", type=int, default=12, help="每张表最多尝试的候选链")
