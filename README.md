@@ -39,6 +39,10 @@ python desktop.py
 
 网页调试入口仍可通过 `python app.py` 启动。通过 `LLM_PROVIDER=local` 可在开发环境使用 Ollama 等本地 OpenAI 兼容模型。Excel 加载项相关说明见 [addin/README.md](./addin/README.md)。
 
+## 文档
+
+- [Excel Agent 微调数据集构造方案](./docs/dataset-plan.md)
+
 ## 许可
 
 本软件仅限个人、非商业用途；允许转发版权方发布的未修改官方安装包，不允许商业使用、修改或发布衍生版本。详见 [LICENSE.txt](./LICENSE.txt)。
