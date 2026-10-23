@@ -111,6 +111,29 @@ class AgentToolWorkflowTests(unittest.TestCase):
         self.assertEqual(result["final_answer"], "2025 年东区销售额 125，西区 80。")
         self.assertEqual(len(result["plans"]), 4)
 
+    def test_agent_adds_computed_column_before_aggregate(self):
+        agent.llm = ScriptedToolCallingModel([
+            tool_call("add_computed_column", {
+                "name": "含税销售额",
+                "operator": "multiply",
+                "left": "销售额",
+                "right_value": 1.13,
+                "round_digits": 2,
+            }, "compute-1"),
+            tool_call("aggregate_data", {
+                "group_by": ["区域"],
+                "metrics": [{"column": "含税销售额", "function": "sum"}],
+            }, "aggregate-1"),
+            AIMessage(content="已按区域汇总含税销售额。"),
+        ])
+
+        result = agent.invoke_agent(self._state("给销售额加13%税后按区域汇总"))
+
+        self.assertEqual(result["result_df"]["区域"].tolist(), ["东", "西"])
+        self.assertAlmostEqual(result["result_df"]["含税销售额_sum"].tolist()[0], 197.75)
+        self.assertAlmostEqual(result["result_df"]["含税销售额_sum"].tolist()[1], 90.4)
+        self.assertEqual(result["tool_steps"], 2)
+
     def test_tool_error_is_returned_to_model_and_corrected(self):
         agent.llm = ScriptedToolCallingModel([
             tool_call("filter_rows", {

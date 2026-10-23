@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 import excel_ops
 from schemas import (
+    ComputedColumnInput,
     FillMissingInput,
     FilterCondition,
     Metric,
@@ -125,6 +126,113 @@ class ExcelOperationTests(unittest.TestCase):
     def test_fill_value_requires_a_scalar(self):
         with self.assertRaises(ValidationError):
             FillMissingInput(fill_strategy="value")
+
+    def test_computed_column_multiplies_two_fields(self):
+        frame = pd.DataFrame({"数量": [2, 3], "单价": [10.5, 4]})
+        result = excel_ops._computed_column(
+            frame,
+            ComputedColumnInput(
+                name="金额",
+                operator="multiply",
+                left="数量",
+                right_column="单价",
+            ),
+        )
+
+        self.assertEqual(result["金额"].tolist(), [21.0, 12.0])
+
+    def test_computed_column_rounds_and_accepts_constant(self):
+        frame = pd.DataFrame({"销售额": [100, 250]})
+        result = excel_ops._computed_column(
+            frame,
+            ComputedColumnInput(
+                name="提成",
+                operator="multiply",
+                left="销售额",
+                right_value=0.07,
+                round_digits=2,
+            ),
+        )
+
+        self.assertEqual(result["提成"].tolist(), [7.0, 17.5])
+
+    def test_computed_column_rejects_zero_divisor(self):
+        frame = pd.DataFrame({"销售额": [10, 20], "数量": [2, 0]})
+        with self.assertRaisesRegex(ValueError, "不能作为除数"):
+            excel_ops._computed_column(
+                frame,
+                ComputedColumnInput(
+                    name="单价",
+                    operator="divide",
+                    left="销售额",
+                    right_column="数量",
+                ),
+            )
+        with self.assertRaisesRegex(ValueError, "除数不能为 0"):
+            excel_ops._computed_column(
+                frame,
+                ComputedColumnInput(
+                    name="占比",
+                    operator="divide",
+                    left="销售额",
+                    right_value=0,
+                ),
+            )
+
+    def test_computed_column_rejects_existing_column_name(self):
+        with self.assertRaisesRegex(ValueError, "已存在"):
+            excel_ops._computed_column(
+                self.df,
+                ComputedColumnInput(
+                    name="销售额",
+                    operator="add",
+                    left="销售额",
+                    right_value=1,
+                ),
+            )
+
+    def test_computed_column_rejects_non_numeric_field(self):
+        frame = pd.DataFrame({"产品": ["A", "B"]})
+        with self.assertRaisesRegex(ValueError, "不包含可用于计算的数值"):
+            excel_ops._computed_column(
+                frame,
+                ComputedColumnInput(
+                    name="新值",
+                    operator="add",
+                    left="产品",
+                    right_value=1,
+                ),
+            )
+
+    def test_computed_column_requires_exactly_one_right_operand(self):
+        for kwargs in (
+            {},
+            {"right_column": "单价", "right_value": 2},
+        ):
+            with self.subTest(kwargs=kwargs):
+                with self.assertRaises(ValidationError):
+                    ComputedColumnInput(
+                        name="金额",
+                        operator="multiply",
+                        left="数量",
+                        **kwargs,
+                    )
+
+    def test_computed_column_rejects_date_field(self):
+        frame = pd.DataFrame({"日期": pd.to_datetime(["2025-01-01", "2025-02-01"])})
+        with self.assertRaisesRegex(ValueError, "日期或时间类型"):
+            excel_ops._computed_column(
+                frame,
+                ComputedColumnInput(
+                    name="偏移日期",
+                    operator="add",
+                    left="日期",
+                    right_value=1,
+                ),
+            )
+
+    def test_computed_column_is_registered_as_agent_tool(self):
+        self.assertIn("add_computed_column", {item.name for item in excel_ops.EXCEL_TOOLS})
 
     def test_tool_executor_does_not_modify_source_dataframe(self):
         frame = pd.DataFrame({"值": [1, None]})

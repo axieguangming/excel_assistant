@@ -17,6 +17,7 @@ from langgraph.types import Command
 from app_paths import DATA_DIR
 from schemas import (
     AggregateDataInput,
+    ComputedColumnInput,
     CreateChartInput,
     DeduplicateRowsInput,
     FilterRowsInput,
@@ -184,6 +185,59 @@ def _fill_missing_values(
 
 def _describe_data(df: pd.DataFrame) -> pd.DataFrame:
     return df.describe(include="all").transpose().reset_index(names="字段")
+
+
+def _numeric_series(df: pd.DataFrame, column: str) -> pd.Series:
+    values = df[column]
+    if (
+        pd.api.types.is_datetime64_any_dtype(values)
+        or pd.api.types.is_timedelta64_dtype(values)
+    ):
+        raise ValueError(f"字段“{column}”是日期或时间类型，不能参与数值计算。")
+    numeric = pd.to_numeric(values, errors="coerce")
+    if values.notna().any() and numeric.notna().sum() == 0:
+        raise ValueError(f"字段“{column}”不包含可用于计算的数值。")
+    return numeric
+
+
+def _computed_column(df: pd.DataFrame, computed: ComputedColumnInput) -> pd.DataFrame:
+    name = computed.name
+    if name in df.columns:
+        raise ValueError(f"字段“{name}”已存在，请为新列使用其他名称。")
+
+    columns = [computed.left, *([computed.right_column] if computed.right_column else [])]
+    _validate_columns(df, columns)
+
+    left_values = _numeric_series(df, computed.left)
+    if computed.right_column:
+        right: pd.Series | float = _numeric_series(df, computed.right_column)
+    else:
+        right = float(computed.right_value)
+
+    if computed.operator == "add":
+        result = left_values + right
+    elif computed.operator == "subtract":
+        result = left_values - right
+    elif computed.operator == "multiply":
+        result = left_values * right
+    else:
+        if isinstance(right, pd.Series):
+            if right.eq(0).any():
+                raise ValueError(
+                    f"字段“{computed.right_column}”包含 0，不能作为除数。"
+                )
+        elif right == 0:
+            raise ValueError("除数不能为 0。")
+        result = left_values / right
+
+    result = result.astype(float).replace([float("inf"), float("-inf")], pd.NA)
+    if computed.round_digits is not None:
+        result = result.round(computed.round_digits)
+    if left_values.notna().any() and result.notna().sum() == 0:
+        raise ValueError(f"字段“{computed.left}”的计算结果全部为空，请检查参与计算的字段。")
+
+    df[name] = result
+    return df
 
 
 def _frame_observation(df: pd.DataFrame) -> str:
@@ -484,6 +538,35 @@ def _create_chart(df: pd.DataFrame, chart: CreateChartInput) -> str:
     return f"/api/chart/{filename}"
 
 
+@tool(args_schema=ComputedColumnInput)
+def add_computed_column(
+    name: str,
+    operator: str,
+    left: str,
+    state: Annotated[dict[str, Any], InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
+    right_column: str | None = None,
+    right_value: float | None = None,
+    round_digits: int | None = None,
+) -> Command:
+    """新增一个计算列，用加、减、乘、除组合两个数值字段或一个字段与常数。"""
+    computed = ComputedColumnInput(
+        name=name,
+        operator=operator,
+        left=left,
+        right_column=right_column,
+        right_value=right_value,
+        round_digits=round_digits,
+    )
+    return _execute_dataframe_tool(
+        state,
+        tool_call_id,
+        "add_computed_column",
+        computed.model_dump(exclude_none=True),
+        lambda df: _computed_column(df, computed),
+    )
+
+
 @tool(args_schema=CreateChartInput)
 def create_chart(
     chart_type: str,
@@ -531,6 +614,7 @@ EXCEL_TOOLS = [
     top_n_rows,
     deduplicate_rows,
     fill_missing_values,
+    add_computed_column,
     describe_data,
     create_chart,
 ]

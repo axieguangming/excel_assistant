@@ -1,6 +1,6 @@
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 # 定义聊天请求类，设定需要的内容
@@ -79,6 +79,36 @@ class FillMissingInput(BaseModel):
         if self.fill_strategy == "value":
             if isinstance(self.fill_value, (dict, list, set, tuple)) or self.fill_value is None:
                 raise ValueError("value 填充策略需要一个非空标量 fill_value")
+        return self
+
+
+class ComputedColumnInput(BaseModel):
+    name: str = Field(min_length=1, description="新列名称，不能与现有字段重名")
+    operator: Literal["add", "subtract", "multiply", "divide"]
+    left: str = Field(min_length=1, description="左侧数值字段")
+    right_column: str | None = Field(default=None, description="右侧数值字段")
+    right_value: float | None = Field(default=None, description="右侧常数")
+    round_digits: int | None = Field(
+        default=None,
+        ge=0,
+        le=10,
+        description="结果保留的小数位数；留空表示不额外取整",
+    )
+
+    @field_validator("name", "left", "right_column")
+    @classmethod
+    def strip_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("字段名称不能为空")
+        return stripped
+
+    @model_validator(mode="after")
+    def validate_operands(self) -> "ComputedColumnInput":
+        if (self.right_column is None) == (self.right_value is None):
+            raise ValueError("right_column 和 right_value 必须且只能提供一个")
         return self
 
 

@@ -16,8 +16,9 @@
 | 分组汇总 | `aggregate_data` | 已支持 |
 | 去重 | `deduplicate_rows` | 已支持 |
 | 缺失值填充 | `fill_missing_values` | 已支持 |
+| 新增计算列 | `add_computed_column` | 已支持 |
 | 图表 | `create_chart` | 已支持 |
-| 查找与合并、透视、新增计算列、格式与公式编辑 | — | 暂不支持 |
+| 查找与合并、透视、格式与公式编辑 | — | 暂不支持 |
 
 暂不支持的需求仍应出现在数据集中，但标签应是澄清或明确说明无法完成，不能虚构并不存在的工具能力。
 
@@ -31,6 +32,7 @@
 - `sort_rows`：`sort_by` 至少一项，每项包含 `column` 与 `ascending`。
 - `deduplicate_rows`：`subset` 为空表示按整行判重。
 - `fill_missing_values`：`fill_strategy` 仅限 `ffill`、`bfill`、`value`；`value` 策略需要非空标量 `fill_value`。
+- `add_computed_column`：`operator` 仅限 `add`、`subtract`、`multiply`、`divide`；`right_column` 与 `right_value` 必须且只能提供一个；`name` 不能与现有字段重名；`round_digits` 取值范围 0–10；除数为 0 时返回错误。
 - `create_chart`：`chart_type` 仅限 `bar`、`line`、`pie`、`scatter`；`chart_y` 为数值字段；散点图必须提供 `chart_x`。
 
 Agent 当前最大模型决策轮数为 `MAX_AGENT_TURNS = 10`（见 [agent.py](../agent.py)），多步操作链通常为 1–10 次工具调用。
