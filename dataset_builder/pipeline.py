@@ -13,8 +13,8 @@ import pandas as pd
 
 from dataset_builder.chain import (
     ChainValidationError,
+    TOOL_NAMES,
     canonical_chain,
-    chains_equivalent,
     normalize_chain,
 )
 from dataset_builder.executor import execute_chain
@@ -45,7 +45,7 @@ class QuestionWriter(Protocol):
     ) -> dict[str, str]: ...
 
 
-QuestionParser = Callable[[SyntheticTable, str], Any]
+QuestionParser = Callable[..., Any]
 
 
 @dataclass
@@ -55,6 +55,7 @@ class BuildConfig:
     max_chain_attempts: int = 12
     render_charts: bool = False
     verify_questions: bool = True
+    parse_attempts: int = 2
     split_ratios: tuple[float, float, float] = (0.8, 0.1, 0.1)
     split_seed: int = 0
 
@@ -128,6 +129,58 @@ def _diverse_order(
     return [*selected, *remaining]
 
 
+def _parse_with_repair(
+    parser: QuestionParser,
+    table: SyntheticTable,
+    question: str,
+    *,
+    max_steps: int,
+    attempts: int,
+) -> tuple[list[dict[str, Any]] | None, str]:
+    """解析问题并把校验错误反馈给模型，最多尝试 attempts 次。"""
+    feedback = ""
+    last_error = ""
+    for _ in range(max(1, attempts)):
+        try:
+            payload = parser(table, question, feedback)
+        except TypeError:
+            # 兼容只接受两个参数的解析器；此时无法反馈错误。
+            if feedback:
+                break
+            payload = parser(table, question)
+        except (ValueError, RuntimeError) as error:
+            last_error = str(error)
+            feedback = last_error
+            continue
+
+        try:
+            return normalize_chain(payload, max_steps=max_steps), ""
+        except ChainValidationError as error:
+            last_error = str(error)
+            feedback = last_error
+
+    return None, last_error or "解析失败"
+
+
+def _result_signature(frame: pd.DataFrame) -> tuple[str, ...]:
+    """把结果表转换成可比较的稳定字符串，忽略列名重命名等表现差异。"""
+    normalized = frame.reset_index(drop=True).astype(str)
+    return tuple(normalized.itertuples(index=False, name=None))
+
+
+def _results_mismatch(expected: pd.DataFrame, actual: pd.DataFrame) -> str:
+    """比较两张结果表；返回空字符串表示一致。"""
+    if expected.shape != actual.shape:
+        return (
+            f"结果形状不同：期望 {expected.shape}，解析后为 {actual.shape}"
+        )
+    expected_signature = _result_signature(expected)
+    actual_signature = _result_signature(actual)
+    if expected_signature != actual_signature:
+        return "结果内容不同：问题解析出的操作产生了不同的数据"
+    return ""
+
+
 def build_dataset(
     tables: Iterable[SyntheticTable],
     *,
@@ -148,9 +201,11 @@ def build_dataset(
     for table in table_list:
         collected = 0
         seen: set[str] = set()
+        # 至少请求与工具数相当的候选，才能覆盖不同能力类别。
+        requested = max(resolved.samples_per_table + 2, len(TOOL_NAMES))
         candidates = proposer.propose(
             table,
-            resolved.samples_per_table + 2,
+            requested,
             max_steps=resolved.max_steps,
             allowed_tools=allowed_tools,
         )
@@ -213,27 +268,44 @@ def build_dataset(
 
             consistency = "unverified"
             if parser is not None and resolved.verify_questions:
-                try:
-                    parsed_payload = parser(table, question)
-                    parsed_steps = normalize_chain(
-                        parsed_payload, max_steps=resolved.max_steps
-                    )
-                except (ChainValidationError, ValueError) as error:
+                parsed_steps, parse_error = _parse_with_repair(
+                    parser,
+                    table,
+                    question,
+                    max_steps=resolved.max_steps,
+                    attempts=resolved.parse_attempts,
+                )
+                if parsed_steps is None:
                     result.rejects.append(
                         _reject(
                             table,
                             "question_mismatch",
-                            f"反向解析失败：{error}",
+                            f"反向解析失败：{parse_error}",
                             steps,
                         )
                     )
                     continue
-                if not chains_equivalent(parsed_steps, steps):
+
+                # 主判据是执行结果是否一致：重命名等表现差异不影响判定，
+                # 但解析出不同的操作会产生不同结果，从而被拒绝。
+                replayed = execute_chain(table.frame, parsed_steps)
+                if not replayed.ok or replayed.frame is None:
                     result.rejects.append(
                         _reject(
                             table,
                             "question_mismatch",
-                            "反向解析结果与原操作链不一致",
+                            f"反向解析结果无法执行：{replayed.error}",
+                            steps,
+                        )
+                    )
+                    continue
+                difference = _results_mismatch(outcome.frame, replayed.frame)
+                if difference:
+                    result.rejects.append(
+                        _reject(
+                            table,
+                            "question_mismatch",
+                            difference,
                             steps,
                         )
                     )

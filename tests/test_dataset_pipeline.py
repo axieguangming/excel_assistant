@@ -176,6 +176,53 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(result.samples, [])
         self.assertEqual(result.rejects[0]["reason"], "question_mismatch")
 
+    def test_unexecutable_parse_is_rejected(self):
+        chain = [{"tool": "describe_data", "args": {}}]
+        with tempfile.TemporaryDirectory() as directory:
+            result = build_dataset(
+                self.tables[:1],
+                proposer=StaticProposer([{"steps": chain}]),
+                writer=TemplateQuestionWriter(),
+                parser=lambda table, question, feedback="": {
+                    "steps": [
+                        {
+                            "tool": "sort_rows",
+                            "args": {"sort_by": [{"column": "不存在的列"}]},
+                        }
+                    ]
+                },
+                config=self.config,
+                out_dir=directory,
+            )
+
+        self.assertEqual(result.samples, [])
+        self.assertIn("无法执行", result.rejects[0]["detail"])
+
+    def test_parser_is_retried_with_feedback(self):
+        chain = [{"tool": "describe_data", "args": {}}]
+        feedbacks: list[str] = []
+
+        def parser(table, question, feedback=""):
+            feedbacks.append(feedback)
+            if not feedback:
+                return {"steps": [{"tool": "describe_data", "args": {"bad": 1}}]}
+            return {"steps": chain}
+
+        with tempfile.TemporaryDirectory() as directory:
+            result = build_dataset(
+                self.tables[:1],
+                proposer=StaticProposer([{"steps": chain}]),
+                writer=TemplateQuestionWriter(),
+                parser=parser,
+                config=self.config,
+                out_dir=directory,
+            )
+
+        self.assertEqual(len(result.samples), 1)
+        self.assertEqual(len(feedbacks), 2)
+        self.assertTrue(feedbacks[0] == "")
+        self.assertIn("不接受参数", feedbacks[1])
+
     def test_matching_parser_accepts_the_sample(self):
         chain = [{"tool": "describe_data", "args": {}}]
         with tempfile.TemporaryDirectory() as directory:

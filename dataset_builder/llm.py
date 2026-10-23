@@ -115,6 +115,13 @@ class LLMChainProposer:
         "生成贴近真实用户需求的候选操作链。只能使用给定工具与真实字段名，"
         "参数必须符合对应工具的 JSON Schema。不要输出解释文字。"
         "输出格式：JSON 数组，每个元素是 {\"steps\": [{\"tool\": ..., \"args\": {...}}]}。"
+        "候选链必须覆盖不同能力，不要集中在筛选和排序："
+        "在表格结构与字段类型允许时，"
+        "汇总(aggregate_data)、排序(sort_rows)、TopN(top_n_rows)、"
+        "去重(deduplicate_rows)、缺失值填充(fill_missing_values)、"
+        "计算列(add_computed_column)、描述统计(describe_data)、"
+        "图表(create_chart) 各至少出现一次。"
+        "图表需要数值列，且若在汇总之后绘图，chart_x 用分组列、chart_y 用汇总列名。"
     )
 
     def __init__(self, llm: DatasetLLM | None = None):
@@ -195,11 +202,40 @@ class LLMQuestionWriter:
 
 
 class LLMQuestionParser:
-    """把自然语言问题反解析为操作链，用于一致性校验。"""
+    """把自然语言问题反解析为操作链，用于一致性校验。
+
+    `feedback` 用于把上一步的校验错误反馈给模型，让它在限定次数内修正参数。
+    """
 
     system = (
         "你是 Excel 操作解析器。把用户问题解析为等价的工具调用链，"
-        "只能使用给定工具与真实字段名，参数必须符合对应工具的 JSON Schema。"
+        "只能使用给定工具与真实字段名，参数必须与对应工具的 JSON Schema 完全一致，"
+        "必填字段一个都不能省略。"
+        '输出格式为 {"steps": [{"tool": 工具名, "args": {...}}]}。'
+        "参数示例（严格照此嵌套，不要把数组里的字段提到 args 顶层）：\n"
+        '{"tool": "filter_rows", "args": {"filters": '
+        '[{"column": "区域", "operator": "eq", "value": "华东"}]}}\n'
+        '{"tool": "filter_rows", "args": {"filters": '
+        '[{"column": "销售额", "operator": "not_empty"}]}}\n'
+        '{"tool": "aggregate_data", "args": {"group_by": ["区域"], '
+        '"metrics": [{"column": "销售额", "function": "sum"}]}}\n'
+        '{"tool": "sort_rows", "args": {"sort_by": '
+        '[{"column": "销售额", "ascending": false}]}}\n'
+        '{"tool": "top_n_rows", "args": {"sort_by": '
+        '[{"column": "销售额", "ascending": false}], "limit": 10}}\n'
+        '{"tool": "fill_missing_values", "args": {"fill_strategy": "value", '
+        '"subset": ["区域"], "fill_value": "未知"}}\n'
+        '{"tool": "describe_data", "args": {}}\n'
+        "重要：aggregate_data 之后，原始明细列已不存在，后续步骤只能引用汇总结果列。"
+        "汇总列名规则：metric 未给 name 时为「字段_函数」（如 销售额 求和得到 销售额_sum，"
+        "订单号 计数得到 订单号_count）；给了 name 时就用该 name，后续步骤必须引用同一个名字。"
+        "示例如下：\n"
+        '{"steps": [{"tool": "aggregate_data", "args": {"group_by": ["区域"], '
+        '"metrics": [{"column": "销售额", "function": "sum"}]}}, '
+        '{"tool": "sort_rows", "args": {"sort_by": '
+        '[{"column": "销售额_sum", "ascending": false}]}}, '
+        '{"tool": "create_chart", "args": {"chart_type": "bar", "chart_x": "区域", '
+        '"chart_y": "销售额_sum"}}]}\n'
         "如果无法解析，输出 {\"steps\": []}。只输出 JSON。"
     )
 
@@ -210,16 +246,17 @@ class LLMQuestionParser:
         self,
         table: SyntheticTable,
         question: str,
+        feedback: str = "",
         *,
         allowed_tools: Iterable[str] | None = None,
     ) -> Any:
         allowed = tuple(allowed_tools) if allowed_tools is not None else TOOL_NAMES
-        user = json.dumps(
-            {
-                "worksheet": table.profile(),
-                "available_tools": json.loads(tool_catalog(allowed)),
-                "question": question,
-            },
-            ensure_ascii=False,
-        )
+        payload: dict[str, Any] = {
+            "worksheet": table.profile(),
+            "available_tools": json.loads(tool_catalog(allowed)),
+            "question": question,
+        }
+        if feedback:
+            payload["previous_error"] = feedback
+        user = json.dumps(payload, ensure_ascii=False)
         return self.llm._invoke_json(self.system, user)

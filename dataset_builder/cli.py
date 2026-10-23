@@ -49,7 +49,9 @@ def _components(name: str):
         return (
             LLMChainProposer(),
             LLMQuestionWriter(),
-            lambda table, question: parser.parse(table, question),
+            lambda table, question, feedback="": parser.parse(
+                table, question, feedback
+            ),
         )
 
     raise ValueError(f"未知的生成器：{name}")
