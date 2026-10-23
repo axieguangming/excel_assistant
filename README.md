@@ -39,6 +39,23 @@ python desktop.py
 
 网页调试入口仍可通过 `python app.py` 启动。通过 `LLM_PROVIDER=local` 可在开发环境使用 Ollama 等本地 OpenAI 兼容模型。Excel 加载项相关说明见 [addin/README.md](./addin/README.md)。
 
+## 数据集构建
+
+仓库提供用于微调与评测的离线数据集流水线，当前只生成仿真表格：
+
+```powershell
+# 离线模板生成，不调用模型
+python -m dataset_builder.cli build --out datasets --table-count 6 --per-table 6
+
+# 使用已配置的远程模型生成操作链与自然语言问题（会产生 API 费用）
+python -m dataset_builder.cli build --out datasets --table-count 30 --per-table 10 --proposer llm
+
+# 回放校验：重新执行期望操作链并核对结果
+python -m dataset_builder.cli replay --samples datasets/samples.jsonl --tables-dir datasets/tables
+```
+
+输出包含表格索引、样本、结果真值、拒绝原因、按工作簿分组的训练/验证/测试划分与覆盖度报告。详见 [docs/dataset-plan.md](./docs/dataset-plan.md)。`datasets/` 为本地生成目录，不纳入版本控制。
+
 ## 文档
 
 - [Excel Agent 微调数据集构造方案](./docs/dataset-plan.md)

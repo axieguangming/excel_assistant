@@ -39,9 +39,9 @@ Agent 当前最大模型决策轮数为 `MAX_AGENT_TURNS = 10`（见 [agent.py](
 
 ## 2. 数据来源
 
-三类来源组合使用，试点阶段以仿真表格为主，逐步引入真实表格。
+**当前实现只使用仿真生成表格**（见 2.2），因此数据集不涉及第三方许可或个人信息；公开表格与真实需求来源保留为后续扩展，尚未在本仓库实现。
 
-### 2.1 有许可的公开表格
+### 2.1 有许可的公开表格（后续扩展，当前未实现）
 
 - 候选来源：开放数据平台、政府开放数据、明确标注许可的公开数据集、学术数据集。
 - 优先选择具有实际业务语义的数据，例如销售、库存、订单、预算、排班、调查统计。
@@ -49,7 +49,7 @@ Agent 当前最大模型决策轮数为 `MAX_AGENT_TURNS = 10`（见 [agent.py](
 - **可下载不等于可用于训练或再分发**，许可不明确的数据源不得进入训练集。
 - 含个人信息或敏感字段的表格应排除，或先完成去标识化再评估。
 
-### 2.2 仿真生成表格
+### 2.2 仿真生成表格（当前实现）
 
 按常见业务场景生成表格与任务，可控覆盖：
 
@@ -59,7 +59,7 @@ Agent 当前最大模型决策轮数为 `MAX_AGENT_TURNS = 10`（见 [agent.py](
 - 少量行、无匹配结果、超宽表等边界；
 - 多种字段命名与表结构，避免模型记住单一模板。
 
-### 2.3 经授权的真实需求
+### 2.3 经授权的真实需求（后续扩展，当前未实现）
 
 - 后续可在产品中明确告知并取得用户同意后，收集**去标识化的需求文本与纠正反馈**。
 - 默认不留存用户上传的工作簿；确需保留时，须单独约定用途、保留期限与删除方式。
@@ -143,6 +143,47 @@ Agent 当前最大模型决策轮数为 `MAX_AGENT_TURNS = 10`（见 [agent.py](
 - 不再让模型重新生成一份轨迹，避免与已执行结果不一致。
 - 轨迹应保留“调用 → 观察 → 下一步”的完整循环。
 
+### 3.8 当前实现
+
+代码位于 [dataset_builder/](../dataset_builder)：
+
+| 模块 | 职责 |
+| --- | --- |
+| `tables.py` | 生成 5 类仿真业务表（订单、库存、排班、预算、问卷），可控注入空值、重复行、全空列，并导出/加载表格索引 |
+| `chain.py` | 操作链规范化：工具白名单、参数 schema、步数上限、链等价比较 |
+| `executor.py` | 用 `excel_ops` 的真实算法逐步执行，产出中间结果与最终真值 |
+| `llm.py` | 大模型适配：生成候选操作链、生成问题、反向解析问题 |
+| `templates.py` | 离线确定性生成器与中文表述，用于自测和冒烟 |
+| `pipeline.py` | 串联流水线、落盘样本与结果、回放校验 |
+| `split.py` | 按 `workbook_id` 分组划分并检测泄漏 |
+| `cli.py` | 命令行入口 |
+
+```powershell
+# 离线模板生成（不调用模型，适合验证流程）
+python -m dataset_builder.cli build --out datasets --table-count 6 --per-table 6
+
+# 用已配置的远程模型生成操作链与问题（会产生 API 费用）
+python -m dataset_builder.cli build --out datasets --table-count 30 --per-table 10 --proposer llm
+
+# 回放校验：重新执行期望操作链，核对行数与列名
+python -m dataset_builder.cli replay --samples datasets/samples.jsonl --tables-dir datasets/tables
+```
+
+输出目录：
+
+```
+datasets/
+  tables/index.json        # 表格索引、列类型、来源许可
+  tables/<table_id>.csv    # 仿真表格
+  samples.jsonl            # 通过的样本
+  rejects.jsonl            # 被拒样本及原因
+  results/<sample_id>.csv  # 最终结果真值
+  splits/{train,val,test}.jsonl
+  report.json              # 覆盖度、拒绝原因、分区计数
+```
+
+被拒原因：`invalid_chain`（工具或参数不合法）、`execution_failed`（列不存在、类型不适用等）、`question_failed`（问题生成失败）、`question_mismatch`（反向解析与原链不一致）。
+
 ## 4. 样本格式
 
 每个样本保存为 JSONL 一行，工作簿与结果文件通过 ID 引用。
@@ -174,11 +215,29 @@ Agent 当前最大模型决策轮数为 `MAX_AGENT_TURNS = 10`（见 [agent.py](
       }
     }
   ],
-  "step_results": [{"shape": [128, 9]}, {"shape": [20, 9]}],
-  "expected_result": {"artifact": "results/wb00123-task07.parquet", "row_count": 20},
+  "step_results": [
+    {"tool": "filter_rows", "ok": true, "rows": 128, "columns": ["..."]},
+    {"tool": "top_n_rows", "ok": true, "rows": 20, "columns": ["..."]}
+  ],
+  "expected_result": {
+    "artifact": "results/wb00123-task07.csv",
+    "row_count": 20,
+    "columns": ["..."],
+    "sha256": "..."
+  },
   "expected_response": "已筛出华东地区金额大于1000的订单，并按金额降序返回前20条。",
-  "verification": {"state": "auto_passed", "checked_at": "2026-10-23"},
-  "provenance": {"generator_model": "specify-model", "prompt_version": "v3", "created_at": "2026-10-23"}
+  "verification": {
+    "state": "auto_passed",
+    "execution": "passed",
+    "question_consistency": "llm_verified",
+    "checked_at": "2026-10-23T02:45:31+00:00"
+  },
+  "provenance": {
+    "proposer": "LLMChainProposer",
+    "writer": "LLMQuestionWriter",
+    "prompt_version": "dataset-v1",
+    "created_at": "2026-10-23T02:45:31+00:00"
+  }
 }
 ```
 
@@ -200,7 +259,7 @@ Agent 当前最大模型决策轮数为 `MAX_AGENT_TURNS = 10`（见 [agent.py](
 | `verification` | 校验状态与时间 |
 | `provenance` | 生成模型、提示词版本与创建时间 |
 
-`verification.state` 建议取值：`auto_passed`、`human_approved`、`needs_review`、`rejected`。
+`verification.state` 取值：`auto_passed`、`human_approved`、`needs_review`、`rejected`。当前流水线只会产出 `auto_passed`（执行与问题校验都通过）或 `needs_review`（跳过了问题反向解析）。`verification.question_consistency` 取值：`llm_verified`（反向解析比对通过）、`structural`（模板生成器直接由操作链产生问题，未做独立解析）、`unverified`。
 
 ## 5. 数据划分与防泄漏
 
@@ -222,7 +281,7 @@ Agent 当前最大模型决策轮数为 `MAX_AGENT_TURNS = 10`（见 [agent.py](
 
 ### 6.1 试点阶段
 
-- 约 30–50 份不同工作簿，包含公开与仿真表格；
+- 约 30–50 份不同工作簿，当前全部来自仿真生成；
 - 约 300–500 条任务，覆盖全部现有工具与多步组合；
 - 全部可自动执行与验证，抽样人工审核；
 - 目的是验证格式、校验器与审核流程，**不足以证明模型达到产品级效果**。
@@ -263,24 +322,26 @@ Agent 当前最大模型决策轮数为 `MAX_AGENT_TURNS = 10`（见 [agent.py](
 
 ## 9. 交付物
 
-1. 数据源与许可登记表；
-2. 表格文件库与元信息索引；
-3. 任务规范与覆盖配额，含支持与不支持清单；
-4. 操作链生成提示词与版本记录；
-5. 操作链校验器与结果验证器，支持回放；
-6. 训练、验证、测试划分文件，按工作簿分组；
-7. 样例 JSONL 与中间结果、最终结果产物；
-8. 人工审核记录与验证状态；
-9. 远程模型基线评测报告。
+| 交付物 | 状态 |
+| --- | --- |
+| 数据源与许可登记表 | 已实现（仿真来源记录在 `tables/index.json`）；公开数据尚不需要 |
+| 表格文件库与元信息索引 | 已实现 |
+| 任务规范与覆盖配额，含支持与不支持清单 | 规范已实现（工具白名单 + 参数约束 + 步数上限）；按类别配额的自动调节尚未实现，见 `report.json` 的人工核对 |
+| 操作链生成提示词与版本记录 | 已实现（`prompt_version`） |
+| 操作链校验器与结果验证器，支持回放 | 已实现 |
+| 训练、验证、测试划分文件，按工作簿分组 | 已实现 |
+| 样例 JSONL 与最终结果产物 | 已实现 |
+| 人工审核记录与验证状态 | 字段已预留，审核流程未实现 |
+| 远程模型基线评测报告 | 未实现 |
 
 ## 10. 实施顺序
 
-1. 冻结工具能力清单与参数约束，以 [schemas.py](../schemas.py) 为准。
-2. 定义表格元信息与样例 schema，先跑通 5 份表的端到端流水线。
-3. 实现操作链校验器与执行回放，优先保证无效链无法进入数据集。
-4. 制作 300–500 条试点数据，人工抽检问题忠实度与结果正确性。
-5. 冻结测试集，运行远程模型基线。
-6. 扩展数据规模，进行微调与蒸馏，按评测缺口迭代。
+1. 冻结工具能力清单与参数约束，以 [schemas.py](../schemas.py) 为准。（已完成）
+2. 定义表格元信息与样例 schema，先跑通 5 份表的端到端流水线。（已完成）
+3. 实现操作链校验器与执行回放，优先保证无效链无法进入数据集。（已完成）
+4. 制作 300–500 条试点数据，人工抽检问题忠实度与结果正确性。（待执行）
+5. 冻结测试集，运行远程模型基线。（待执行）
+6. 扩展数据规模，进行微调与蒸馏，按评测缺口迭代。（待执行）
 
 ## 11. 核心原则
 

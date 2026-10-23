@@ -10,3 +10,4 @@ addin/certs/
 vibe_images/
 data/
 llm_config.json
+datasets/
