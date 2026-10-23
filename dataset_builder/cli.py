@@ -161,7 +161,65 @@ def _build_parser() -> argparse.ArgumentParser:
     replay.add_argument("--tables-dir", default="datasets/tables")
     replay.set_defaults(func=_cmd_replay)
 
+    evaluate = subparsers.add_parser(
+        "eval", help="在冻结分区上评测模型（驱动真实 Agent）"
+    )
+    evaluate.add_argument("--data", default="datasets", help="数据集根目录")
+    evaluate.add_argument(
+        "--split",
+        choices=("train", "val", "test"),
+        default="test",
+        help="要评测的分区；默认 test",
+    )
+    evaluate.add_argument("--limit", type=int, help="只评测前 N 条，用于快速冒烟")
+    evaluate.add_argument("--model", help="模型名，例如 qwen2.5-1.5b-instruct")
+    evaluate.add_argument(
+        "--base-url",
+        help="OpenAI 兼容服务地址，例如 http://127.0.0.1:8080/v1；不填则用项目当前配置",
+    )
+    evaluate.add_argument("--api-key", help="本地服务通常随便填；默认 none")
+    evaluate.add_argument("--temperature", type=float, default=0.0)
+    evaluate.add_argument("--out", default="datasets/eval-report.json")
+    evaluate.set_defaults(func=_cmd_eval)
+
     return parser
+
+
+def _cmd_eval(args: argparse.Namespace) -> int:
+    from dataset_builder.eval import (
+        EvalConfig,
+        evaluate,
+        failure_breakdown,
+        format_summary,
+        make_chat_model,
+        write_report,
+    )
+
+    config = EvalConfig(
+        split=args.split,
+        limit=args.limit,
+        model=args.model,
+        base_url=args.base_url,
+        api_key=args.api_key,
+        temperature=args.temperature,
+    )
+    try:
+        llm = make_chat_model(config)
+    except Exception as error:
+        print(f"无法初始化模型：{error}", file=sys.stderr)
+        return 2
+
+    report = evaluate(data_dir=args.data, llm=llm, config=config)
+    path = write_report(report, args.out)
+
+    print(format_summary(report))
+    breakdown = failure_breakdown(report)
+    if breakdown:
+        print("\n失败原因：")
+        for reason, count in breakdown:
+            print(f"  {count:>3}  {reason}")
+    print(f"\n报告：{path}")
+    return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:

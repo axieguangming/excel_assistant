@@ -52,13 +52,19 @@ python -m dataset_builder.cli build --out datasets --table-count 30 --per-table 
 
 # 回放校验：重新执行期望操作链并核对结果
 python -m dataset_builder.cli replay --samples datasets/samples.jsonl --tables-dir datasets/tables
+
+# 在冻结测试集上评测模型（驱动真实 Agent）
+python -m dataset_builder.cli eval --data datasets --split test
 ```
 
 输出包含表格索引、样本、结果真值、拒绝原因、按工作簿分组的训练/验证/测试划分与覆盖度报告。样本真值在 **Excel 读回后的表格**上计算，因此与用户上传同一文件后得到的数据一致。详见 [docs/dataset-plan.md](./docs/dataset-plan.md)。`datasets/` 为本地生成目录，不纳入版本控制。
 
+本地小模型（Qwen2.5-1.5B + llama.cpp）的基线与打包注意事项见 [docs/local-model.md](./docs/local-model.md)。
+
 ## 文档
 
 - [Excel Agent 微调数据集构造方案](./docs/dataset-plan.md)
+- [本地小模型（Qwen2.5-1.5B + llama.cpp）](./docs/local-model.md)
 
 ## 许可
 
