@@ -35,6 +35,52 @@ llama-server -m .\models\qwen2.5-1.5b-instruct-q4_k_m.gguf `
 随版本变化，请以本机 `llama-server --help` 为准。启用后，模型输出必定是可解析的
 JSON，这对 1.5B 模型是刚需，而不是可选项。
 
+## 自动启动本地服务
+
+打包后的程序可以在启动时自己拉起 `llama-server`，退出时关闭它，普通用户不需要开命令行。
+在构建配置中加上四项即可：
+
+```ini
+LLM_PROVIDER=local
+LOCAL_BASE_URL=http://127.0.0.1:8080/v1
+LOCAL_MODEL=qwen2.5-1.5b-instruct
+LOCAL_AUTO_START=1
+LOCAL_SERVER_PATH=llama\llama-server.exe
+LOCAL_MODEL_PATH=models\qwen2.5-1.5b-instruct-q4_k_m.gguf
+```
+
+相对路径会按安装目录解析，因此可以把推理程序和模型一起打包。可选字段：
+
+| 配置项 | 构建环境变量 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `auto_start` | `LOCAL_AUTO_START` | `false` | 是否由应用拉起本地服务 |
+| `local_server` | `LOCAL_SERVER_PATH` | — | `llama-server` 可执行文件路径 |
+| `local_model_path` | `LOCAL_MODEL_PATH` | — | GGUF 模型文件路径 |
+| `context_size` | `LOCAL_CONTEXT_SIZE` | `8192` | 传给 `-c` 的上下文长度 |
+| `startup_timeout` | `LOCAL_STARTUP_TIMEOUT` | `90` | 等待服务就绪的秒数 |
+| `extra_args` | `LOCAL_EXTRA_ARGS` | — | 追加参数，如 `--threads,4` |
+
+启用 `LOCAL_AUTO_START` 时必须同时给出程序与模型路径，否则构建直接失败，避免产出
+一个启动后才发现缺文件的安装包。
+
+### 运行时的行为
+
+| 情况 | 行为 |
+| --- | --- |
+| 目标地址已有可用服务 | 直接复用，不重复启动；应用退出时也不会关闭它 |
+| 端口在监听但不是模型服务 | 报错提示端口被占用，建议更换端口或关闭占用程序 |
+| 程序或模型文件缺失 | 报错并指出具体缺失路径 |
+| 启动后立即退出 | 提示退出码，并指向日志文件 |
+| 超过 `startup_timeout` 仍未就绪 | 提示可调大超时，并指向日志文件 |
+| 上述任何失败 | 弹出警告后仍打开界面，聊天时返回同一原因，便于修复后重试 |
+
+启动日志写入 `%LOCALAPPDATA%\ExcelAssistant\logs\local-model.log`（超过 2 MB 会在下次启动时重建）。
+子进程以无控制台窗口方式启动，退出时先正常终止，10 秒内未退出则强制结束。
+
+**性能提示：** 健康检查先做 0.3 秒的 TCP 探测，确认端口在监听后才发 HTTP 请求。
+这不是微优化——在部分 Windows 环境里，连接已关闭的本地端口不会立即被拒绝，
+而是等满超时；缺少这一步时每次健康检查要慢 4 秒。
+
 ## 构建本地模型版安装包
 
 在构建环境或未提交的 `.env` 中声明本地提供方：
@@ -58,7 +104,10 @@ LOCAL_MODEL=qwen2.5-1.5b-instruct
   "provider": "local",
   "api_key": "local",
   "base_url": "http://127.0.0.1:8080/v1",
-  "model": "qwen2.5-1.5b-instruct"
+  "model": "qwen2.5-1.5b-instruct",
+  "auto_start": true,
+  "local_server": "llama\\llama-server.exe",
+  "local_model_path": "models\\qwen2.5-1.5b-instruct-q4_k_m.gguf"
 }
 ```
 
@@ -69,7 +118,8 @@ LOCAL_MODEL=qwen2.5-1.5b-instruct
 - 本地模式不需要 API Key；`api_key` 会写入占位值 `local`，因为 OpenAI 客户端要求非空。
 - 本地模式不会发送远程专用的 `extra_body`（DeepSeek 的 thinking 开关），避免本地模板
   收到不认识的参数。
-- 本地服务未启动时，聊天接口返回 503 和"无法连接本地模型服务"提示，而不是 500。
+- 本地服务不可用时，聊天接口返回 503 和可操作提示，而不是 500。未启用自动启动时，
+  提示会说明需要先手工启动服务以及应监听的地址。
 
 ## 跑基线评测
 
@@ -114,13 +164,13 @@ python -m dataset_builder.cli eval --data datasets --split test `
    字段，打包程序会按配置选择 remote 或 local；旧配置缺少该字段时仍按 remote 处理。
 2. **模型文件如何分发。** 随包分发会让安装包增加约 1 GB；首次启动下载则依赖网络与
    断点续传，且需要校验完整性。两种方式都需要先定。
-3. **本地服务生命周期。** 应用需要负责拉起/关闭 `llama-server`，并处理端口占用与启动失败。
-   目前本地服务未启动时，界面会收到 503 与"无法连接本地模型服务"的提示，但需要用户
-   自行启动服务。
+3. ~~**本地服务生命周期。**~~ **已解决**：应用可以按配置自动拉起与关闭 `llama-server`，
+   复用已有服务，并对端口占用、文件缺失、启动失败给出可操作提示（见上文"自动启动本地服务"）。
 4. **CPU 指令集兼容性。** llama.cpp 需要与本机 CPU 匹配的二进制（AVX2 等），
    需要在低配机器上验证。
 
-在 2–4 解决前，安装包可以使用本地模型配置，但要求用户自行准备并启动本地模型服务。
+剩余的 2 和 4 属于分发与兼容性工作。在此之前，只要打包时把推理程序与模型放进安装目录
+并设置 `LOCAL_AUTO_START`，用户侧就不需要手工启动任何服务。
 
 ## 下一步
 

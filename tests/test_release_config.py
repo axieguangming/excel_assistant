@@ -228,6 +228,7 @@ class ReleaseConfigWriterTests(unittest.TestCase):
                 "api_key": "local",
                 "base_url": "http://127.0.0.1:8080/v1",
                 "model": "qwen2.5-1.5b-instruct",
+                "auto_start": False,
             },
         )
 
@@ -273,6 +274,84 @@ class ReleaseConfigWriterTests(unittest.TestCase):
         kwargs = init_chat_model.call_args.kwargs
         self.assertEqual(kwargs["model"], "qwen2.5-1.5b-instruct")
         self.assertEqual(kwargs["base_url"], "http://127.0.0.1:8080/v1")
+
+    def test_release_config_writer_embeds_auto_start_settings(self):
+        config = MODEL_CONFIG_WRITER["build_model_config"](
+            {
+                "LLM_PROVIDER": "local",
+                "LOCAL_BASE_URL": "http://127.0.0.1:8080/v1",
+                "LOCAL_MODEL": "qwen2.5-1.5b-instruct",
+                "LOCAL_AUTO_START": "true",
+                "LOCAL_SERVER_PATH": r"llama\llama-server.exe",
+                "LOCAL_MODEL_PATH": r"models\model.gguf",
+                "LOCAL_CONTEXT_SIZE": "4096",
+                "LOCAL_STARTUP_TIMEOUT": "120",
+                "LOCAL_EXTRA_ARGS": "--threads,4",
+            }
+        )
+
+        self.assertTrue(config["auto_start"])
+        self.assertEqual(config["local_server"], r"llama\llama-server.exe")
+        self.assertEqual(config["local_model_path"], r"models\model.gguf")
+        self.assertEqual(config["context_size"], 4096)
+        self.assertEqual(config["startup_timeout"], 120.0)
+        self.assertEqual(config["extra_args"], ["--threads", "4"])
+
+    def test_release_config_writer_requires_paths_when_auto_start_is_enabled(self):
+        for missing in ("LOCAL_SERVER_PATH", "LOCAL_MODEL_PATH"):
+            with self.subTest(missing=missing):
+                environment = {
+                    "LLM_PROVIDER": "local",
+                    "LOCAL_AUTO_START": "1",
+                    "LOCAL_SERVER_PATH": "llama-server.exe",
+                    "LOCAL_MODEL_PATH": "model.gguf",
+                }
+                environment.pop(missing)
+                with self.assertRaisesRegex(SystemExit, "LOCAL_AUTO_START requires"):
+                    MODEL_CONFIG_WRITER["build_model_config"](environment)
+
+    def test_release_config_writer_rejects_invalid_numbers(self):
+        for key, value in (
+            ("LOCAL_CONTEXT_SIZE", "many"),
+            ("LOCAL_CONTEXT_SIZE", "0"),
+            ("LOCAL_STARTUP_TIMEOUT", "abc"),
+            ("LOCAL_STARTUP_TIMEOUT", "-1"),
+        ):
+            with self.subTest(key=key, value=value):
+                with self.assertRaises(SystemExit):
+                    MODEL_CONFIG_WRITER["build_model_config"](
+                        {
+                            "LLM_PROVIDER": "local",
+                            key: value,
+                        }
+                    )
+
+    def test_written_config_can_be_consumed_by_the_server_manager(self):
+        """构建产物必须能被本地服务管理器直接解析，无需手工补字段。"""
+        import local_model_server
+
+        config = MODEL_CONFIG_WRITER["build_model_config"](
+            {
+                "LLM_PROVIDER": "local",
+                "LOCAL_BASE_URL": "http://127.0.0.1:8080/v1",
+                "LOCAL_MODEL": "qwen2.5-1.5b-instruct",
+                "LOCAL_AUTO_START": "1",
+                "LOCAL_SERVER_PATH": r"llama\llama-server.exe",
+                "LOCAL_MODEL_PATH": r"models\model.gguf",
+                "LOCAL_CONTEXT_SIZE": "4096",
+            }
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            parsed = local_model_server.parse_local_server_config(config, base_dir=base)
+
+            self.assertTrue(parsed.auto_start)
+            self.assertEqual(parsed.base_url, "http://127.0.0.1:8080/v1")
+            self.assertEqual(parsed.context_size, 4096)
+            self.assertTrue(parsed.executable.endswith("llama-server.exe"))
+            self.assertTrue(parsed.model_path.endswith("model.gguf"))
+            self.assertEqual(Path(parsed.executable).parent, base / "llama")
 
     def test_release_config_writer_uses_dotenv_when_inherited_values_are_blank(self):
         environment = MODEL_CONFIG_WRITER["merge_build_environment"](

@@ -13,6 +13,11 @@ import webview
 os.environ["EXCEL_ASSISTANT_DESKTOP"] = "1"
 
 from app_paths import get_data_dir
+from local_model_server import (
+    LocalModelServer,
+    LocalModelStartupError,
+    load_local_server_config,
+)
 
 os.environ["EXCEL_ASSISTANT_DATA_DIR"] = str(get_data_dir())
 
@@ -21,13 +26,36 @@ STARTUP_TIMEOUT_SECONDS = 15
 SHUTDOWN_TIMEOUT_SECONDS = 8
 
 
-def _show_error(message: str) -> None:
+def _show_message(message: str, flags: int) -> None:
     if os.name == "nt":
         import ctypes
 
-        ctypes.windll.user32.MessageBoxW(None, message, "Excel AI 助手", 0x10)
+        ctypes.windll.user32.MessageBoxW(None, message, "Excel AI 助手", flags)
     else:
         print(message)
+
+
+def _show_error(message: str) -> None:
+    _show_message(message, 0x10)
+
+
+def _show_warning(message: str) -> None:
+    # 允许用户继续打开界面：模型不可用时聊天会给出具体指引。
+    _show_message(message, 0x30)
+
+
+def _start_local_model(data_dir: Path) -> tuple[LocalModelServer | None, str | None]:
+    """按配置准备本地模型服务，返回 (管理器, 警告信息)。"""
+    config = load_local_server_config()
+    if config is None:
+        return None, None
+
+    server = LocalModelServer(config, log_dir=data_dir / "logs")
+    try:
+        server.ensure_running()
+    except LocalModelStartupError as error:
+        return None, str(error)
+    return server, None
 
 
 def _run_server(server: uvicorn.Server, errors: list[Exception]) -> None:
@@ -48,6 +76,7 @@ def _stop_server(server: uvicorn.Server, thread: threading.Thread) -> None:
 def main() -> None:
     server: uvicorn.Server | None = None
     server_thread: threading.Thread | None = None
+    local_model: LocalModelServer | None = None
     try:
         port = int(os.getenv("DESKTOP_PORT", "8000"))
         if not 1 <= port <= 65535:
@@ -55,6 +84,11 @@ def main() -> None:
 
         data_dir = Path(os.environ["EXCEL_ASSISTANT_DATA_DIR"])
         data_dir.mkdir(parents=True, exist_ok=True)
+
+        local_model, model_warning = _start_local_model(data_dir)
+        if model_warning:
+            _show_warning(model_warning)
+
         from app import app
 
         config = uvicorn.Config(
@@ -105,6 +139,10 @@ def main() -> None:
     else:
         if server is not None and server_thread is not None:
             _stop_server(server, server_thread)
+    finally:
+        # 无论是正常退出还是异常退出，都要关闭由本进程启动的模型服务。
+        if local_model is not None:
+            local_model.stop()
 
 
 if __name__ == "__main__":

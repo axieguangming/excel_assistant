@@ -6,6 +6,24 @@ param(
 $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 
+function Invoke-BuildCommand {
+    # 外部工具（PyInstaller、ISCC）会把进度和警告写到 stderr。在
+    # $ErrorActionPreference = "Stop" 下，PowerShell 会把这类输出当成终止错误，
+    # 导致明明成功的构建被判为失败。这里临时放宽并只看退出码。
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [string[]]$Arguments = @()
+    )
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & $FilePath @Arguments 2>&1 | ForEach-Object { Write-Host $_ }
+        return $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previous
+    }
+}
+
 $iscc = $null
 if (-not $SkipInstaller) {
     $iscc = Get-Command "ISCC.exe" -ErrorAction SilentlyContinue
@@ -63,21 +81,21 @@ try {
     if (Test-Path $ffiDll) {
         $pyinstallerArgs += @("--add-binary", "$ffiDll;.")
     }
-    & $PythonPath -m PyInstaller @pyinstallerArgs
-    if ($LASTEXITCODE -ne 0) {
-        throw "PyInstaller failed with exit code $LASTEXITCODE."
+    $pyinstallerExit = Invoke-BuildCommand -FilePath $PythonPath -Arguments (@("-m", "PyInstaller") + $pyinstallerArgs)
+    if ($pyinstallerExit -ne 0) {
+        throw "PyInstaller failed with exit code $pyinstallerExit."
     }
 
     $modelConfigPath = Join-Path $repoRoot "dist\ExcelAssistant\llm_config.json"
-    & $PythonPath $modelConfigWriter $modelConfigPath
-    if ($LASTEXITCODE -ne 0) {
+    $configExit = Invoke-BuildCommand -FilePath $PythonPath -Arguments @($modelConfigWriter, $modelConfigPath)
+    if ($configExit -ne 0) {
         throw "Could not create the release model configuration."
     }
 
     if (-not $SkipInstaller) {
-        & $iscc.Source (Join-Path $PSScriptRoot "excel_assistant.iss")
-        if ($LASTEXITCODE -ne 0) {
-            throw "Inno Setup failed with exit code $LASTEXITCODE."
+        $isccExit = Invoke-BuildCommand -FilePath $iscc.Source -Arguments @((Join-Path $PSScriptRoot "excel_assistant.iss"))
+        if ($isccExit -ne 0) {
+            throw "Inno Setup failed with exit code $isccExit."
         }
     }
 } finally {

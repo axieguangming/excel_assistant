@@ -28,18 +28,31 @@ DATA_DIR = get_data_dir()
 STATIC_DIR = RESOURCE_DIR / "static"
 
 
-def get_packaged_model_config() -> dict[str, str]:
-    """读取安装包同目录的 llm_config.json。
+def get_packaged_model_config_path() -> Path:
+    return Path(sys.executable).parent / "llm_config.json"
 
-    缺少 provider 时按 remote 处理，兼容只写了 api_key/base_url/model 的旧配置。
+
+def read_packaged_model_config() -> dict[str, object]:
+    """读取安装包同目录 llm_config.json 的原始内容。
+
+    返回未做类型转换的字典，供需要布尔/列表字段的调用方使用。
     """
-    config_path = Path(sys.executable).parent / "llm_config.json"
+    config_path = get_packaged_model_config_path()
     try:
         config = json.loads(config_path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
         raise RuntimeError(f"无法读取安装包中的模型配置文件 {config_path}：{error}") from error
     if not isinstance(config, dict):
         raise RuntimeError("安装包中的模型配置文件格式无效。")
+    return config
+
+
+def get_packaged_model_config() -> dict[str, str]:
+    """读取安装包模型配置，并把常用字段规范成字符串。
+
+    缺少 provider 时按 remote 处理，兼容只写了 api_key/base_url/model 的旧配置。
+    """
+    config = read_packaged_model_config()
     return {
         key: str(config.get(key) or "").strip()
         for key in ("provider", "api_key", "base_url", "model")

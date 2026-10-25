@@ -17,6 +17,7 @@ DEFAULT_LOCAL_BASE_URL = "http://127.0.0.1:8080/v1"
 DEFAULT_LOCAL_MODEL = "qwen2.5-1.5b-instruct"
 LOCAL_API_KEY_PLACEHOLDER = "local"
 LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 
 
 def merge_build_environment(
@@ -72,23 +73,79 @@ def _checked_url(base_url: str, *, provider: str) -> str:
     return base_url.rstrip("/")
 
 
-def _build_local_config(environment: Mapping[str, str]) -> dict[str, str]:
+def _build_local_config(environment: Mapping[str, str]) -> dict[str, object]:
     base_url = (
         environment.get("LOCAL_BASE_URL", "").strip() or DEFAULT_LOCAL_BASE_URL
     )
     model = environment.get("LOCAL_MODEL", "").strip() or DEFAULT_LOCAL_MODEL
     api_key = environment.get("LOCAL_API_KEY", "").strip() or LOCAL_API_KEY_PLACEHOLDER
+    auto_start = environment.get("LOCAL_AUTO_START", "").strip().lower() in TRUE_VALUES
     if not model:
         raise SystemExit("LOCAL_MODEL must not be empty.")
-    return {
+
+    config: dict[str, object] = {
         "provider": LOCAL_PROVIDER,
         "api_key": api_key,
         "base_url": _checked_url(base_url, provider=LOCAL_PROVIDER),
         "model": model,
+        "auto_start": auto_start,
     }
 
+    # 以下字段只在显式配置时写入，避免把空路径塞进安装包。
+    for environment_key, config_key in (
+        ("LOCAL_SERVER_PATH", "local_server"),
+        ("LOCAL_MODEL_PATH", "local_model_path"),
+    ):
+        value = environment.get(environment_key, "").strip()
+        if value:
+            config[config_key] = value
 
-def _build_remote_config(environment: Mapping[str, str]) -> dict[str, str]:
+    if auto_start and not (config.get("local_server") and config.get("local_model_path")):
+        raise SystemExit(
+            "LOCAL_AUTO_START requires both LOCAL_SERVER_PATH and LOCAL_MODEL_PATH "
+            "so the packaged app knows what to launch."
+        )
+
+    context_size = environment.get("LOCAL_CONTEXT_SIZE", "").strip()
+    if context_size:
+        config["context_size"] = _checked_positive_int("LOCAL_CONTEXT_SIZE", context_size)
+
+    startup_timeout = environment.get("LOCAL_STARTUP_TIMEOUT", "").strip()
+    if startup_timeout:
+        config["startup_timeout"] = _checked_positive_float(
+            "LOCAL_STARTUP_TIMEOUT", startup_timeout
+        )
+
+    extra_args = environment.get("LOCAL_EXTRA_ARGS", "").strip()
+    if extra_args:
+        config["extra_args"] = [
+            part.strip() for part in extra_args.split(",") if part.strip()
+        ]
+
+    return config
+
+
+def _checked_positive_int(name: str, value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise SystemExit(f"{name} must be an integer, got {value!r}.") from error
+    if parsed <= 0:
+        raise SystemExit(f"{name} must be greater than 0.")
+    return parsed
+
+
+def _checked_positive_float(name: str, value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as error:
+        raise SystemExit(f"{name} must be a number, got {value!r}.") from error
+    if parsed <= 0:
+        raise SystemExit(f"{name} must be greater than 0.")
+    return parsed
+
+
+def _build_remote_config(environment: Mapping[str, str]) -> dict[str, object]:
     api_key = environment.get("DEEPSEEK_API_KEY", "").strip()
     base_url = environment.get("DEEPSEEK_BASE_URL", "").strip()
     model = environment.get("DEEPSEEK_MODEL", "deepseek-v4-flash").strip()
@@ -118,7 +175,7 @@ def _build_remote_config(environment: Mapping[str, str]) -> dict[str, str]:
     }
 
 
-def build_model_config(environment: Mapping[str, str]) -> dict[str, str]:
+def build_model_config(environment: Mapping[str, str]) -> dict[str, object]:
     provider = _resolve_provider(environment)
     if provider == LOCAL_PROVIDER:
         return _build_local_config(environment)
