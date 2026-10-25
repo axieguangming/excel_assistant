@@ -13,11 +13,7 @@ import webview
 os.environ["EXCEL_ASSISTANT_DESKTOP"] = "1"
 
 from app_paths import get_data_dir
-from local_model_server import (
-    LocalModelServer,
-    LocalModelStartupError,
-    load_local_server_config,
-)
+from local_model_runtime import LocalModelRuntime, build_runtime, set_runtime
 
 os.environ["EXCEL_ASSISTANT_DATA_DIR"] = str(get_data_dir())
 
@@ -44,18 +40,20 @@ def _show_warning(message: str) -> None:
     _show_message(message, 0x30)
 
 
-def _start_local_model(data_dir: Path) -> tuple[LocalModelServer | None, str | None]:
-    """按配置准备本地模型服务，返回 (管理器, 警告信息)。"""
-    config = load_local_server_config()
-    if config is None:
+def _start_local_model(
+    data_dir: Path,
+) -> tuple[LocalModelRuntime | None, str | None]:
+    """按配置准备本地模型运行时，返回 (运行时, 警告信息)。
+
+    模型尚未下载时不再报错：界面会引导用户下载，因此返回 (runtime, None)。
+    """
+    runtime = build_runtime(data_dir=data_dir)
+    if runtime is None:
         return None, None
 
-    server = LocalModelServer(config, log_dir=data_dir / "logs")
-    try:
-        server.ensure_running()
-    except LocalModelStartupError as error:
-        return None, str(error)
-    return server, None
+    set_runtime(runtime)
+    _, warning = runtime.ensure_ready()
+    return runtime, warning
 
 
 def _run_server(server: uvicorn.Server, errors: list[Exception]) -> None:
@@ -76,7 +74,7 @@ def _stop_server(server: uvicorn.Server, thread: threading.Thread) -> None:
 def main() -> None:
     server: uvicorn.Server | None = None
     server_thread: threading.Thread | None = None
-    local_model: LocalModelServer | None = None
+    local_model: LocalModelRuntime | None = None
     try:
         port = int(os.getenv("DESKTOP_PORT", "8000"))
         if not 1 <= port <= 65535:

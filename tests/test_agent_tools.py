@@ -41,8 +41,18 @@ class AgentToolWorkflowTests(unittest.TestCase):
         self.previous_llm = agent.llm
         self.previous_logging = os.environ.get("TRAIN_DATA_LOGGING")
         os.environ.pop("TRAIN_DATA_LOGGING", None)
+        # 模型运行时是进程级单例，测试间必须清理，避免相互影响。
+        from local_model_runtime import set_runtime
+
+        self.previous_runtime = __import__(
+            "local_model_runtime", fromlist=["get_runtime"]
+        ).get_runtime()
+        set_runtime(None)
 
     def tearDown(self):
+        from local_model_runtime import set_runtime
+
+        set_runtime(self.previous_runtime)
         agent.llm = self.previous_llm
         if self.previous_logging is None:
             os.environ.pop("TRAIN_DATA_LOGGING", None)
@@ -316,6 +326,134 @@ class AgentToolWorkflowTests(unittest.TestCase):
 
             with open(os.path.join(data_dir, "codegen_log.jsonl"), encoding="utf-8") as file:
                 self.assertIn("authorized sample", file.read())
+
+
+class ModelStatusEndpointTests(unittest.TestCase):
+    """验证界面依赖的两个模型接口。"""
+
+    def setUp(self):
+        from local_model_runtime import set_runtime
+
+        self.previous_runtime = __import__(
+            "local_model_runtime", fromlist=["get_runtime"]
+        ).get_runtime()
+        self.previous_llm = agent.llm
+        set_runtime(None)
+        self.addCleanup(set_runtime, self.previous_runtime)
+        self.addCleanup(setattr, agent, "llm", self.previous_llm)
+
+    def _runtime(self, state: str, **extra):
+        class StubRuntime:
+            def __init__(self):
+                self.manifest = type("M", (), {"is_configured": state != "no_manifest"})()
+                self.downloader = type(
+                    "D", (), {"is_installed": lambda self_: state == "ready"}
+                )()
+                self.download_calls = 0
+
+            def status(self):
+                return {"provider": "local", "state": state, **extra}
+
+            def start_download(self):
+                self.download_calls += 1
+                return True
+
+        return StubRuntime()
+
+    def test_status_returns_disabled_outside_local_mode(self):
+        import asyncio
+        from unittest.mock import patch
+
+        with patch.object(api_app, "get_runtime", return_value=None), patch.object(
+            api_app, "current_provider", return_value="remote"
+        ):
+            payload = asyncio.run(api_app.model_status())
+
+        self.assertEqual(payload["state"], "disabled")
+        self.assertFalse(payload["can_download"])
+
+    def test_status_delegates_to_runtime(self):
+        import asyncio
+
+        from local_model_runtime import set_runtime
+
+        runtime = self._runtime("needs_download", can_download=True, message="下载吧")
+        set_runtime(runtime)
+
+        payload = asyncio.run(api_app.model_status())
+
+        self.assertEqual(payload["state"], "needs_download")
+        self.assertEqual(payload["message"], "下载吧")
+
+    def test_download_endpoint_rejects_remote_mode(self):
+        import asyncio
+
+        from fastapi import HTTPException
+
+        with self.assertRaises(HTTPException) as captured:
+            asyncio.run(api_app.model_download())
+
+        self.assertEqual(captured.exception.status_code, 400)
+
+    def test_download_endpoint_starts_download(self):
+        import asyncio
+
+        from local_model_runtime import set_runtime
+
+        runtime = self._runtime("needs_download")
+        set_runtime(runtime)
+
+        payload = asyncio.run(api_app.model_download())
+
+        self.assertTrue(payload["started"])
+        self.assertEqual(runtime.download_calls, 1)
+
+    def test_download_endpoint_is_noop_when_model_exists(self):
+        import asyncio
+
+        from local_model_runtime import set_runtime
+
+        runtime = self._runtime("ready")
+        set_runtime(runtime)
+
+        payload = asyncio.run(api_app.model_download())
+
+        self.assertFalse(payload["started"])
+        self.assertEqual(runtime.download_calls, 0)
+
+    def test_download_endpoint_requires_a_download_url(self):
+        import asyncio
+
+        from fastapi import HTTPException
+        from local_model_runtime import set_runtime
+
+        set_runtime(self._runtime("no_manifest"))
+
+        with self.assertRaises(HTTPException) as captured:
+            asyncio.run(api_app.model_download())
+
+        self.assertEqual(captured.exception.status_code, 400)
+
+    def test_chat_refuses_while_model_is_not_ready(self):
+        import asyncio
+
+        from fastapi import HTTPException
+        from local_model_runtime import set_runtime
+
+        df = pd.DataFrame({"区域": ["东"], "销售额": [100]})
+        api_app.SESSIONS["pending-model"] = {"df": df, "history": []}
+        self.addCleanup(api_app.SESSIONS.pop, "pending-model", None)
+        set_runtime(self._runtime("needs_download"))
+
+        with self.assertRaises(HTTPException) as captured:
+            asyncio.run(
+                api_app.chat(
+                    api_app.ChatRequest(session_id="pending-model", question="汇总")
+                )
+            )
+
+        self.assertEqual(captured.exception.status_code, 503)
+        self.assertIn("模型下载", captured.exception.detail)
 
 
 if __name__ == "__main__":

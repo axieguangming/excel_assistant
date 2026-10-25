@@ -54,17 +54,22 @@ DRIVER = textwrap.dedent(
 
     import desktop
 
-    server, warning = desktop._start_local_model(Path(os.environ["TEST_DATA_DIR"]))
+    runtime, warning = desktop._start_local_model(Path(os.environ["TEST_DATA_DIR"]))
     payload = {
-        "started": server is not None,
+        "has_runtime": runtime is not None,
         "warning": warning,
-        "healthy": server.is_healthy() if server is not None else False,
-        "owns_process": server.owns_process if server is not None else False,
-        "has_child": bool(server is not None and server._process is not None),
     }
-    if server is not None:
-        server.stop()
-        payload["stopped_healthy"] = server.is_healthy()
+    if runtime is not None:
+        payload.update(
+            {
+                "state": runtime.status()["state"],
+                "healthy": runtime.server.is_healthy(),
+                "owns_process": runtime.server.owns_process,
+                "has_child": runtime.server._process is not None,
+            }
+        )
+        runtime.stop()
+        payload["stopped_healthy"] = runtime.server.is_healthy()
     print("RESULT:" + json.dumps(payload, ensure_ascii=False))
     """
 )
@@ -138,10 +143,11 @@ class DesktopLocalModelWiringTests(unittest.TestCase):
         )
 
         self.assertIsNone(result["warning"], result["warning"])
-        self.assertTrue(result["started"])
+        self.assertTrue(result["has_runtime"])
         self.assertTrue(result["has_child"])
         self.assertTrue(result["healthy"])
         self.assertTrue(result["owns_process"])
+        self.assertEqual(result["state"], "ready")
         # stop() 之后服务应已下线，证明确实关闭了子进程。
         self.assertFalse(result["stopped_healthy"])
         self.assertTrue((self.root / "data" / "logs" / "local-model.log").is_file())
@@ -157,7 +163,9 @@ class DesktopLocalModelWiringTests(unittest.TestCase):
             }
         )
 
-        self.assertFalse(result["started"])
+        self.assertTrue(result["has_runtime"])
+        self.assertFalse(result["healthy"])
+        self.assertEqual(result["state"], "error")
         self.assertIn(f"127.0.0.1:{port}", result["warning"])
         self.assertIn("未启用自动启动", result["warning"])
 
@@ -174,13 +182,33 @@ class DesktopLocalModelWiringTests(unittest.TestCase):
             }
         )
 
-        self.assertFalse(result["started"])
-        self.assertIn("找不到模型文件", result["warning"])
+        self.assertTrue(result["has_runtime"])
+        self.assertFalse(result["healthy"])
+        self.assertEqual(result["state"], "error")
+        self.assertIn("找不到本地模型文件", result["warning"])
+
+    def test_missing_model_with_download_url_does_not_warn(self):
+        """首次启动且配置了下载地址时，界面负责引导下载，不应弹警告。"""
+        port = free_port()
+        result = self._run_driver(
+            {
+                "LLM_PROVIDER": "local",
+                "LOCAL_BASE_URL": f"http://127.0.0.1:{port}/v1",
+                "LOCAL_MODEL": "qwen2.5-1.5b-instruct",
+                "LOCAL_AUTO_START": "1",
+                "LOCAL_SERVER_PATH": str(self.root / "llama-server.exe"),
+                "LOCAL_MODEL_URL": "https://models.test/model.gguf",
+            }
+        )
+
+        self.assertTrue(result["has_runtime"])
+        self.assertIsNone(result["warning"])
+        self.assertEqual(result["state"], "needs_download")
 
     def test_desktop_does_nothing_in_remote_mode(self):
         result = self._run_driver({"LLM_PROVIDER": "remote"})
 
-        self.assertFalse(result["started"])
+        self.assertFalse(result["has_runtime"])
         self.assertIsNone(result["warning"])
 
 

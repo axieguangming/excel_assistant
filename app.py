@@ -20,7 +20,14 @@ from fastapi.staticfiles import StaticFiles
 
 from app_paths import DATA_DIR, STATIC_DIR
 from agent import invoke_agent
-from load_model import describe_model_error
+from load_model import describe_model_error, current_provider
+from local_model_runtime import (
+    STATE_ERROR,
+    STATE_READY,
+    get_runtime,
+    set_runtime,
+    build_runtime,
+)
 from schemas import ChatRequest, SessionRequest
 
 app = FastAPI(title="Excel AI 助手")
@@ -202,6 +209,15 @@ async def chat(req: ChatRequest):
     if not sess:
         raise HTTPException(404, "会话不存在，请重新上传文件")
 
+    runtime = get_runtime()
+    if runtime is not None:
+        state = runtime.status()["state"]
+        if state in {"needs_download", "downloading", "verifying"}:
+            raise HTTPException(
+                503,
+                "本地模型尚未准备好，请先完成模型下载（界面顶部会显示进度）。",
+            )
+
     try:
         final = await run_in_threadpool(
             _run_agent_serialized,
@@ -251,6 +267,38 @@ async def chat(req: ChatRequest):
     return resp
 
 
+@app.get("/api/model/status")
+async def model_status():
+    """返回当前模型状态，供界面决定是否展示下载引导。"""
+    runtime = get_runtime()
+    if runtime is None:
+        provider = current_provider()
+        return {
+            "provider": provider,
+            "state": "disabled" if provider != "local" else STATE_ERROR,
+            "can_download": False,
+            "message": "",
+        }
+    return runtime.status()
+
+
+@app.post("/api/model/download")
+async def model_download():
+    """开始下载本地模型；进度通过 /api/model/status 轮询。"""
+    runtime = get_runtime()
+    if runtime is None:
+        raise HTTPException(400, "当前未使用本地模型，无需下载。")
+    if runtime.downloader.is_installed():
+        return {"started": False, "reason": "模型文件已存在。"}
+    if not runtime.manifest.is_configured:
+        raise HTTPException(
+            400,
+            "未配置模型下载地址。请手动放置模型文件，或重新安装包含下载配置的版本。",
+        )
+    started = runtime.start_download()
+    return {"started": started}
+
+
 @app.get("/api/download/{filename}")
 async def download(filename: str):
     safe_filename = os.path.basename(filename)
@@ -287,6 +335,9 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", "8443"))
     certfile = os.getenv("SSL_CERTFILE")
     keyfile = os.getenv("SSL_KEYFILE")
+
+    # 开发模式下也初始化模型运行时，便于在浏览器里走通下载与启动流程。
+    set_runtime(build_runtime())
 
     if bool(certfile) != bool(keyfile):
         raise RuntimeError("SSL_CERTFILE 和 SSL_KEYFILE 必须同时设置。")

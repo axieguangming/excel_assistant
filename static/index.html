@@ -351,9 +351,67 @@
   }
   .send:hover { background: #1557b0; }
   .send:disabled { background: #a8c6f0; cursor: not-allowed; }
+
+  /* ===== 本地模型下载横幅 ===== */
+  #model-banner {
+    background: #fff8e6;
+    border-bottom: 1px solid #f0d9a8;
+    padding: 10px 20px;
+  }
+  .model-banner-inner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+  }
+  .model-banner-text { display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
+  .model-banner-text strong { font-size: 14px; color: #8a5a00; }
+  #model-detail { color: #6b6b6b; }
+  #model-download-btn {
+    background: #f29900;
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 8px 18px;
+    cursor: pointer;
+    font-size: 13px;
+    white-space: nowrap;
+  }
+  #model-download-btn:hover { background: #d98800; }
+  #model-download-btn:disabled { background: #e8c48f; cursor: not-allowed; }
+  .model-progress {
+    margin-top: 8px;
+    height: 6px;
+    background: #f0e0c0;
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .model-progress-bar {
+    height: 100%;
+    width: 0%;
+    background: #f29900;
+    transition: width .3s ease;
+  }
+  #model-banner.error { background: #fdeceb; border-bottom-color: #f5c2c0; }
+  #model-banner.error .model-banner-text strong { color: #b3261e; }
 </style>
 </head>
 <body>
+
+<div id="model-banner" hidden>
+  <div class="model-banner-inner">
+    <div class="model-banner-text">
+      <strong id="model-title">首次使用需要下载本地模型</strong>
+      <span id="model-detail">模型只下载一次，之后可离线使用。</span>
+    </div>
+    <div class="model-banner-actions">
+      <button id="model-download-btn">开始下载</button>
+    </div>
+  </div>
+  <div class="model-progress" hidden>
+    <div class="model-progress-bar" id="model-progress-bar"></div>
+  </div>
+</div>
 
 <header>
   <div>📊 Excel AI 助手 <span class="sub">上传表格 → 对话分析 → 多Sheet展示 → 下载</span></div>
@@ -697,6 +755,109 @@ addMsg('ai',
   '3️⃣ 每次分析结果会自动创建新 Sheet，可点击标签切换\n' +
   '4️⃣ 顶部按钮可下载包含所有 Sheet 的完整 Excel'
 );
+
+// ==================== 本地模型状态 ====================
+const modelBanner = $('model-banner'),
+      modelTitle = $('model-title'),
+      modelDetail = $('model-detail'),
+      modelProgress = document.querySelector('#model-banner .model-progress'),
+      modelProgressBar = $('model-progress-bar'),
+      modelDownloadBtn = $('model-download-btn');
+
+let modelPollTimer = null;
+let modelBannerDone = false;   // 已就绪后不再反复显示
+
+function formatGB(bytes) {
+  if (!bytes) return '';
+  return (bytes / 1024 ** 3).toFixed(2) + ' GB';
+}
+
+function renderModelStatus(s) {
+  if (!s || s.state === 'disabled' || s.state === 'remote') {
+    modelBanner.hidden = true;
+    return;
+  }
+  if (s.state === 'ready') {
+    modelBanner.hidden = true;
+    modelBanner.classList.remove('error');
+    modelBannerDone = true;
+    if (modelPollTimer) { clearInterval(modelPollTimer); modelPollTimer = null; }
+    return;
+  }
+  if (modelBannerDone) return;
+
+  modelBanner.hidden = false;
+  modelBanner.classList.toggle('error', s.state === 'error');
+
+  if (s.state === 'needs_download') {
+    modelTitle.textContent = '首次使用需要下载本地模型';
+    const size = formatGB(s.model_size);
+    modelDetail.textContent = size
+      ? `模型约 ${size}，只需下载一次，之后可离线使用。`
+      : '模型只需下载一次，之后可离线使用。';
+    modelDownloadBtn.hidden = !s.can_download;
+    modelDownloadBtn.disabled = false;
+    modelDownloadBtn.textContent = '开始下载';
+    modelProgress.hidden = true;
+  } else if (s.state === 'downloading' || s.state === 'verifying') {
+    modelTitle.textContent = s.state === 'verifying' ? '正在校验模型文件…' : '正在下载本地模型…';
+    const total = formatGB(s.total_bytes);
+    modelDetail.textContent = total
+      ? `${formatGB(s.downloaded_bytes)} / ${total}（${s.percent}%）请保持网络连接。`
+      : `${formatGB(s.downloaded_bytes)} 已下载，请保持网络连接。`;
+    modelDownloadBtn.hidden = true;
+    modelProgress.hidden = false;
+    modelProgressBar.style.width = (s.state === 'verifying' ? 100 : s.percent) + '%';
+  } else if (s.state === 'starting') {
+    modelTitle.textContent = '正在启动本地模型…';
+    modelDetail.textContent = '首次启动加载模型可能需要几十秒。';
+    modelDownloadBtn.hidden = true;
+    modelProgress.hidden = false;
+    modelProgressBar.style.width = '100%';
+  } else if (s.state === 'error') {
+    modelTitle.textContent = '本地模型不可用';
+    modelDetail.textContent = s.message || '请检查模型配置后重试。';
+    modelDownloadBtn.hidden = !s.can_download;
+    modelDownloadBtn.disabled = false;
+    modelDownloadBtn.textContent = '重试下载';
+    modelProgress.hidden = true;
+  }
+}
+
+async function refreshModelStatus() {
+  try {
+    const res = await fetch('/api/model/status');
+    if (!res.ok) return;
+    renderModelStatus(await res.json());
+  } catch (e) {
+    /* 后端未就绪时静默忽略 */
+  }
+}
+
+function startModelPolling() {
+  if (modelPollTimer) return;
+  modelPollTimer = setInterval(refreshModelStatus, 1000);
+}
+
+modelDownloadBtn.onclick = async () => {
+  modelDownloadBtn.disabled = true;
+  modelDownloadBtn.textContent = '准备中…';
+  try {
+    const res = await fetch('/api/model/download', { method: 'POST' });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(d.detail || '无法开始下载');
+    modelProgress.hidden = false;
+    startModelPolling();
+  } catch (e) {
+    modelBanner.classList.add('error');
+    modelTitle.textContent = '无法开始下载';
+    modelDetail.textContent = e.message;
+    modelDownloadBtn.disabled = false;
+    modelDownloadBtn.textContent = '重试下载';
+  }
+};
+
+refreshModelStatus();
 </script>
 </body>
 </html>

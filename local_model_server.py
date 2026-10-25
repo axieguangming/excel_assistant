@@ -180,6 +180,30 @@ def load_local_server_config() -> LocalServerConfig | None:
     )
 
 
+def load_raw_local_config() -> dict[str, object]:
+    """返回本地模式的原始配置字典；远程模式返回空字典。
+
+    下载清单等字段不属于启动参数，统一从这里读取以避免两套来源不一致。
+    """
+    if getattr(sys, "frozen", False):
+        try:
+            raw = read_packaged_model_config()
+        except RuntimeError:
+            return {}
+        provider = _as_text(raw.get("provider") or "remote").lower()
+        return dict(raw) if provider == "local" else {}
+
+    provider = _as_text(os.getenv("LLM_PROVIDER") or "remote").lower()
+    if provider != "local":
+        return {}
+    return {
+        "model_url": os.getenv("LOCAL_MODEL_URL", ""),
+        "model_sha256": os.getenv("LOCAL_MODEL_SHA256", ""),
+        "model_size": os.getenv("LOCAL_MODEL_SIZE", ""),
+        "model_filename": os.getenv("LOCAL_MODEL_FILENAME", ""),
+    }
+
+
 def _http_ok(url: str, timeout: float = PROBE_TIMEOUT_SECONDS) -> bool:
     try:
         with urlopen(url, timeout=timeout) as response:

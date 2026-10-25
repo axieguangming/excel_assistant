@@ -1,5 +1,7 @@
 param(
     [string]$PythonPath = "python",
+    # 可选：把 llama-server 及其同目录依赖一起打进安装包
+    [string]$LlamaDir = "",
     [switch]$SkipInstaller
 )
 
@@ -90,6 +92,19 @@ try {
     $configExit = Invoke-BuildCommand -FilePath $PythonPath -Arguments @($modelConfigWriter, $modelConfigPath)
     if ($configExit -ne 0) {
         throw "Could not create the release model configuration."
+    }
+
+    # 把 llama-server 及其运行时依赖复制进安装目录，供本地模型模式自动启动。
+    if ($LlamaDir) {
+        $resolvedLlama = (Resolve-Path -LiteralPath $LlamaDir -ErrorAction Stop).Path
+        $llamaTarget = Join-Path $repoRoot "dist\ExcelAssistant\llama"
+        New-Item -ItemType Directory -Force $llamaTarget | Out-Null
+        Copy-Item -Path (Join-Path $resolvedLlama "*") -Destination $llamaTarget -Recurse -Force
+        $serverExe = Join-Path $llamaTarget "llama-server.exe"
+        if (-not (Test-Path -LiteralPath $serverExe)) {
+            throw "llama-server.exe was not found in $resolvedLlama. Point -LlamaDir at the folder that contains it."
+        }
+        Write-Host "Bundled llama-server from $resolvedLlama"
     }
 
     if (-not $SkipInstaller) {

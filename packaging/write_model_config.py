@@ -95,15 +95,47 @@ def _build_local_config(environment: Mapping[str, str]) -> dict[str, object]:
     for environment_key, config_key in (
         ("LOCAL_SERVER_PATH", "local_server"),
         ("LOCAL_MODEL_PATH", "local_model_path"),
+        ("LOCAL_MODEL_URL", "model_url"),
+        ("LOCAL_MODEL_SHA256", "model_sha256"),
+        ("LOCAL_MODEL_FILENAME", "model_filename"),
     ):
         value = environment.get(environment_key, "").strip()
         if value:
+            if config_key == "model_sha256":
+                value = value.lower()
             config[config_key] = value
 
-    if auto_start and not (config.get("local_server") and config.get("local_model_path")):
+    model_size = environment.get("LOCAL_MODEL_SIZE", "").strip()
+    if model_size:
+        config["model_size"] = _checked_positive_int("LOCAL_MODEL_SIZE", model_size)
+
+    # 首次启动下载：允许构建机没有模型文件，但要有下载地址。
+    model_url = str(config.get("model_url", ""))
+    if model_url:
+        parsed_url = urlsplit(model_url)
+        if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
+            raise SystemExit("LOCAL_MODEL_URL must be a valid http(s) URL.")
+        if parsed_url.scheme != "https" and parsed_url.hostname not in LOOPBACK_HOSTS:
+            # 明文传输可被篡改；只对本机镜像（测试用）放行。
+            raise SystemExit(
+                "LOCAL_MODEL_URL must use HTTPS unless it points at a loopback "
+                "address used for local testing."
+            )
+
+    has_model_file = bool(config.get("local_model_path"))
+    if auto_start and not (config.get("local_server") and (has_model_file or model_url)):
         raise SystemExit(
-            "LOCAL_AUTO_START requires both LOCAL_SERVER_PATH and LOCAL_MODEL_PATH "
-            "so the packaged app knows what to launch."
+            "LOCAL_AUTO_START requires LOCAL_SERVER_PATH and either "
+            "LOCAL_MODEL_PATH (bundled model) or LOCAL_MODEL_URL "
+            "(first-run download) so the packaged app knows what to launch."
+        )
+
+    if model_url and not config.get("model_sha256"):
+        # 没有校验值就无法保证下载完整，这里只提示，不阻断（本地搭的镜像可能没有）。
+        print(
+            "WARNING: LOCAL_MODEL_SHA256 is empty; the downloaded model will "
+            "only be size-checked.",
+            file=sys.stderr,
         )
 
     context_size = environment.get("LOCAL_CONTEXT_SIZE", "").strip()

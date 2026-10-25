@@ -275,6 +275,89 @@ class ReleaseConfigWriterTests(unittest.TestCase):
         self.assertEqual(kwargs["model"], "qwen2.5-1.5b-instruct")
         self.assertEqual(kwargs["base_url"], "http://127.0.0.1:8080/v1")
 
+    def test_release_config_writer_supports_first_run_download(self):
+        config = MODEL_CONFIG_WRITER["build_model_config"](
+            {
+                "LLM_PROVIDER": "local",
+                "LOCAL_BASE_URL": "http://127.0.0.1:8080/v1",
+                "LOCAL_AUTO_START": "1",
+                "LOCAL_SERVER_PATH": r"llama\llama-server.exe",
+                "LOCAL_MODEL_URL": "https://models.example.test/qwen.gguf",
+                "LOCAL_MODEL_SHA256": "ABC123",
+                "LOCAL_MODEL_SIZE": "1048576000",
+                "LOCAL_MODEL_FILENAME": "qwen.gguf",
+            }
+        )
+
+        self.assertEqual(config["model_url"], "https://models.example.test/qwen.gguf")
+        self.assertEqual(config["model_sha256"], "abc123")
+        self.assertEqual(config["model_size"], 1048576000)
+        self.assertEqual(config["model_filename"], "qwen.gguf")
+        self.assertNotIn("local_model_path", config)
+
+    def test_release_config_writer_rejects_insecure_model_url(self):
+        with self.assertRaisesRegex(SystemExit, "must use HTTPS"):
+            MODEL_CONFIG_WRITER["build_model_config"](
+                {
+                    "LLM_PROVIDER": "local",
+                    "LOCAL_AUTO_START": "1",
+                    "LOCAL_SERVER_PATH": "llama-server.exe",
+                    "LOCAL_MODEL_URL": "http://models.example.test/qwen.gguf",
+                }
+            )
+
+    def test_release_config_writer_allows_loopback_http_model_url(self):
+        config = MODEL_CONFIG_WRITER["build_model_config"](
+            {
+                "LLM_PROVIDER": "local",
+                "LOCAL_AUTO_START": "1",
+                "LOCAL_SERVER_PATH": "llama-server.exe",
+                "LOCAL_MODEL_URL": "http://127.0.0.1:8095/qwen.gguf",
+            }
+        )
+
+        self.assertEqual(config["model_url"], "http://127.0.0.1:8095/qwen.gguf")
+
+    def test_auto_start_requires_a_model_source(self):
+        with self.assertRaisesRegex(SystemExit, "LOCAL_AUTO_START requires"):
+            MODEL_CONFIG_WRITER["build_model_config"](
+                {
+                    "LLM_PROVIDER": "local",
+                    "LOCAL_AUTO_START": "1",
+                    "LOCAL_SERVER_PATH": "llama-server.exe",
+                }
+            )
+
+    def test_download_config_is_readable_by_the_runtime(self):
+        """下载清单必须能被运行时正确解析，字段名不能对不上。"""
+        from model_download import manifest_from_config
+
+        config = MODEL_CONFIG_WRITER["build_model_config"](
+            {
+                "LLM_PROVIDER": "local",
+                "LOCAL_BASE_URL": "http://127.0.0.1:8080/v1",
+                "LOCAL_AUTO_START": "1",
+                "LOCAL_SERVER_PATH": r"llama\llama-server.exe",
+                "LOCAL_MODEL_URL": "https://models.example.test/qwen.gguf",
+                "LOCAL_MODEL_SIZE": "1048576000",
+            }
+        )
+
+        manifest = manifest_from_config(config)
+        self.assertTrue(manifest.is_configured)
+        self.assertEqual(manifest.size, 1048576000)
+        self.assertEqual(manifest.effective_filename, "qwen.gguf")
+
+    def test_release_config_writer_rejects_invalid_size(self):
+        with self.assertRaises(SystemExit):
+            MODEL_CONFIG_WRITER["build_model_config"](
+                {
+                    "LLM_PROVIDER": "local",
+                    "LOCAL_MODEL_URL": "https://models.example.test/qwen.gguf",
+                    "LOCAL_MODEL_SIZE": "huge",
+                }
+            )
+
     def test_release_config_writer_embeds_auto_start_settings(self):
         config = MODEL_CONFIG_WRITER["build_model_config"](
             {
