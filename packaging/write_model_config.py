@@ -9,6 +9,15 @@ from urllib.parse import urlsplit
 
 from dotenv import dotenv_values
 
+REMOTE_PROVIDER = "remote"
+LOCAL_PROVIDER = "local"
+SUPPORTED_PROVIDERS = (REMOTE_PROVIDER, LOCAL_PROVIDER)
+
+DEFAULT_LOCAL_BASE_URL = "http://127.0.0.1:8080/v1"
+DEFAULT_LOCAL_MODEL = "qwen2.5-1.5b-instruct"
+LOCAL_API_KEY_PLACEHOLDER = "local"
+LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
 
 def merge_build_environment(
     file_values: Mapping[str, str | None],
@@ -29,7 +38,57 @@ def merge_build_environment(
     return environment
 
 
-def build_model_config(environment: dict[str, str]) -> dict[str, str]:
+def _resolve_provider(environment: Mapping[str, str]) -> str:
+    raw = (
+        environment.get("EXCEL_ASSISTANT_LLM_PROVIDER")
+        or environment.get("LLM_PROVIDER")
+        or REMOTE_PROVIDER
+    )
+    provider = raw.strip().lower()
+    if provider not in SUPPORTED_PROVIDERS:
+        raise SystemExit(
+            f"LLM_PROVIDER must be one of {', '.join(SUPPORTED_PROVIDERS)}, "
+            f"got {provider!r}."
+        )
+    return provider
+
+
+def _checked_url(base_url: str, *, provider: str) -> str:
+    parsed = urlsplit(base_url)
+    if not base_url or parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise SystemExit(f"{provider} base URL must be a valid http(s) URL.")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise SystemExit(
+            "Base URL must not contain credentials, query parameters, or a fragment."
+        )
+    if provider == REMOTE_PROVIDER and parsed.scheme != "https":
+        raise SystemExit("Remote model base URL must use HTTPS.")
+    if provider == LOCAL_PROVIDER and parsed.hostname not in LOOPBACK_HOSTS:
+        # 本地模型只应指向本机；安装包内不应出现任意 HTTP 端点。
+        raise SystemExit(
+            "Local model base URL must be a loopback address "
+            "(127.0.0.1 or localhost)."
+        )
+    return base_url.rstrip("/")
+
+
+def _build_local_config(environment: Mapping[str, str]) -> dict[str, str]:
+    base_url = (
+        environment.get("LOCAL_BASE_URL", "").strip() or DEFAULT_LOCAL_BASE_URL
+    )
+    model = environment.get("LOCAL_MODEL", "").strip() or DEFAULT_LOCAL_MODEL
+    api_key = environment.get("LOCAL_API_KEY", "").strip() or LOCAL_API_KEY_PLACEHOLDER
+    if not model:
+        raise SystemExit("LOCAL_MODEL must not be empty.")
+    return {
+        "provider": LOCAL_PROVIDER,
+        "api_key": api_key,
+        "base_url": _checked_url(base_url, provider=LOCAL_PROVIDER),
+        "model": model,
+    }
+
+
+def _build_remote_config(environment: Mapping[str, str]) -> dict[str, str]:
     api_key = environment.get("DEEPSEEK_API_KEY", "").strip()
     base_url = environment.get("DEEPSEEK_BASE_URL", "").strip()
     model = environment.get("DEEPSEEK_MODEL", "deepseek-v4-flash").strip()
@@ -51,16 +110,19 @@ def build_model_config(environment: dict[str, str]) -> dict[str, str]:
             "Configure DEEPSEEK_API_KEY and DEEPSEEK_BASE_URL (HTTPS) in the build "
             "environment or untracked .env file."
         )
-    if parsed.username or parsed.password or parsed.query or parsed.fragment:
-        raise SystemExit(
-            "DEEPSEEK_BASE_URL must not contain credentials, query parameters, or a fragment."
-        )
-
     return {
+        "provider": REMOTE_PROVIDER,
         "api_key": api_key,
-        "base_url": base_url.rstrip("/"),
+        "base_url": _checked_url(base_url, provider=REMOTE_PROVIDER),
         "model": model,
     }
+
+
+def build_model_config(environment: Mapping[str, str]) -> dict[str, str]:
+    provider = _resolve_provider(environment)
+    if provider == LOCAL_PROVIDER:
+        return _build_local_config(environment)
+    return _build_remote_config(environment)
 
 
 def main() -> None:

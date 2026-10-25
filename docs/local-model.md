@@ -35,6 +35,42 @@ llama-server -m .\models\qwen2.5-1.5b-instruct-q4_k_m.gguf `
 随版本变化，请以本机 `llama-server --help` 为准。启用后，模型输出必定是可解析的
 JSON，这对 1.5B 模型是刚需，而不是可选项。
 
+## 构建本地模型版安装包
+
+在构建环境或未提交的 `.env` 中声明本地提供方：
+
+```ini
+LLM_PROVIDER=local
+LOCAL_BASE_URL=http://127.0.0.1:8080/v1
+LOCAL_MODEL=qwen2.5-1.5b-instruct
+```
+
+然后正常构建：
+
+```powershell
+.\packaging\build_windows.ps1 -PythonPath "D:\path\to\python.exe"
+```
+
+生成的 `dist\ExcelAssistant\llm_config.json` 形如：
+
+```json
+{
+  "provider": "local",
+  "api_key": "local",
+  "base_url": "http://127.0.0.1:8080/v1",
+  "model": "qwen2.5-1.5b-instruct"
+}
+```
+
+约束与行为：
+
+- 本地模式的 `base_url` **必须是回环地址**（`127.0.0.1`、`localhost`、`::1`）。构建脚本和
+  打包程序都会校验，防止安装包把表格数据发往任意 HTTP 端点。
+- 本地模式不需要 API Key；`api_key` 会写入占位值 `local`，因为 OpenAI 客户端要求非空。
+- 本地模式不会发送远程专用的 `extra_body`（DeepSeek 的 thinking 开关），避免本地模板
+  收到不认识的参数。
+- 本地服务未启动时，聊天接口返回 503 和"无法连接本地模型服务"提示，而不是 500。
+
 ## 跑基线评测
 
 评测驱动的是应用真实的 Agent 图，因此分数代表线上行为：
@@ -74,16 +110,17 @@ python -m dataset_builder.cli eval --data datasets --split test `
 
 ## 打包前需要解决的阻塞
 
-1. **冻结程序强制走远程模型。** [load_model.py](../load_model.py) 中
-   `provider = "remote" if frozen else ...`，安装包目前无法使用本地模型。需要让打包配置
-   能声明 provider 与本地服务地址。
+1. ~~**冻结程序强制走远程模型。**~~ **已解决**：`llm_config.json` 现在包含 `provider`
+   字段，打包程序会按配置选择 remote 或 local；旧配置缺少该字段时仍按 remote 处理。
 2. **模型文件如何分发。** 随包分发会让安装包增加约 1 GB；首次启动下载则依赖网络与
    断点续传，且需要校验完整性。两种方式都需要先定。
 3. **本地服务生命周期。** 应用需要负责拉起/关闭 `llama-server`，并处理端口占用与启动失败。
-4. **WebView2 之外的系统依赖。** llama.cpp 需要与本机 CPU 指令集匹配的二进制
-   （AVX2 等），需要在低配机器上验证。
+   目前本地服务未启动时，界面会收到 503 与"无法连接本地模型服务"的提示，但需要用户
+   自行启动服务。
+4. **CPU 指令集兼容性。** llama.cpp 需要与本机 CPU 匹配的二进制（AVX2 等），
+   需要在低配机器上验证。
 
-在 1–3 解决前，安装包只能继续使用远程模型。
+在 2–4 解决前，安装包可以使用本地模型配置，但要求用户自行准备并启动本地模型服务。
 
 ## 下一步
 

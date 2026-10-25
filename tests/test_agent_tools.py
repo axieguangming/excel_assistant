@@ -154,6 +154,55 @@ class AgentToolWorkflowTests(unittest.TestCase):
         self.assertIn("找不到字段", tool_messages[0].content)
         self.assertIn("操作成功", tool_messages[1].content)
 
+    def test_chat_returns_actionable_error_when_local_model_is_offline(self):
+        """本地模型服务未启动时，接口应返回可操作的 503 而不是 500。"""
+        import asyncio
+
+        from fastapi import HTTPException
+
+        from schemas import ChatRequest
+
+        df = pd.DataFrame({"区域": ["东"], "销售额": [100]})
+        api_app.SESSIONS["offline-session"] = {"df": df, "history": []}
+        self.addCleanup(api_app.SESSIONS.pop, "offline-session", None)
+
+        async def fail_immediately(*args, **kwargs):
+            raise ConnectionError("Connection refused")
+
+        with (
+            patch.object(api_app, "run_in_threadpool", fail_immediately),
+            patch("load_model.current_provider", return_value="local"),
+        ):
+            with self.assertRaises(HTTPException) as captured:
+                asyncio.run(
+                    api_app.chat(
+                        ChatRequest(session_id="offline-session", question="汇总销售额")
+                    )
+                )
+
+        self.assertEqual(captured.exception.status_code, 503)
+        self.assertIn("本地模型服务", captured.exception.detail)
+
+    def test_chat_propagates_unrelated_errors(self):
+        import asyncio
+
+        from schemas import ChatRequest
+
+        df = pd.DataFrame({"区域": ["东"], "销售额": [100]})
+        api_app.SESSIONS["broken-session"] = {"df": df, "history": []}
+        self.addCleanup(api_app.SESSIONS.pop, "broken-session", None)
+
+        async def fail_immediately(*args, **kwargs):
+            raise KeyError("unexpected")
+
+        with patch.object(api_app, "run_in_threadpool", fail_immediately):
+            with self.assertRaises(KeyError):
+                asyncio.run(
+                    api_app.chat(
+                        ChatRequest(session_id="broken-session", question="汇总销售额")
+                    )
+                )
+
     def test_optional_tool_arguments_use_their_declared_defaults(self):
         df = pd.DataFrame({"区域": ["东", None, "西"], "销售额": [100, 80, 50]})
         state = self._state("补齐区域后统计销售额")

@@ -27,6 +27,8 @@ python -m pip install -r requirements.txt -r requirements-build.txt
 
 配置生成器要求有效 API Key 和 HTTPS Base URL；不会将密钥打印到控制台。安装包输出到 `release/`。用户电脑需安装 [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)；Windows 11 通常已包含该运行时。当前安装包尚未配置代码签名证书，公开发布时 Windows SmartScreen 可能显示未知发布者警告。
 
+也可以构建**本地模型版**：在构建环境设置 `LLM_PROVIDER=local`、`LOCAL_BASE_URL`（仅限回环地址）和 `LOCAL_MODEL`，安装包会按本地 OpenAI 兼容服务运行，不需要远程密钥。详见 [docs/local-model.md](./docs/local-model.md)。
+
 正式发布前还需配置代码签名、隐私政策和模型服务商披露。用户上传的工作簿及提问会从本机直接发送给配置的模型服务商，请勿上传不应离开本机的敏感数据。桌面客户端本地生成的数据保存在 `%LOCALAPPDATA%\ExcelAssistant`；桌面发行版会禁用训练样本记录。
 
 ## 开发运行

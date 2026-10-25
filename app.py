@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app_paths import DATA_DIR, STATIC_DIR
 from agent import invoke_agent
-from load_model import ModelConfigurationError
+from load_model import describe_model_error
 from schemas import ChatRequest, SessionRequest
 
 app = FastAPI(title="Excel AI 助手")
@@ -209,8 +209,11 @@ async def chat(req: ChatRequest):
             req.question,
             sess["history"],
         )
-    except ModelConfigurationError as error:
-        raise HTTPException(status_code=503, detail=str(error)) from error
+    except Exception as error:
+        guidance = describe_model_error(error)
+        if guidance is None:
+            raise
+        raise HTTPException(status_code=503, detail=guidance) from error
     resp = {
         "answer": final.get("final_answer", ""),
         "code": final.get("code", ""),

@@ -29,6 +29,10 @@ STATIC_DIR = RESOURCE_DIR / "static"
 
 
 def get_packaged_model_config() -> dict[str, str]:
+    """读取安装包同目录的 llm_config.json。
+
+    缺少 provider 时按 remote 处理，兼容只写了 api_key/base_url/model 的旧配置。
+    """
     config_path = Path(sys.executable).parent / "llm_config.json"
     try:
         config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -37,6 +41,6 @@ def get_packaged_model_config() -> dict[str, str]:
     if not isinstance(config, dict):
         raise RuntimeError("安装包中的模型配置文件格式无效。")
     return {
-        key: str(config.get(key, "")).strip()
-        for key in ("api_key", "base_url", "model")
+        key: str(config.get(key) or "").strip()
+        for key in ("provider", "api_key", "base_url", "model")
     }
