@@ -182,6 +182,119 @@ def _results_mismatch(expected: pd.DataFrame, actual: pd.DataFrame) -> str:
     return ""
 
 
+def _question_variants(
+    writer: QuestionWriter,
+    table: SyntheticTable,
+    steps: list[dict[str, Any]],
+    outcome: Any,
+) -> list[dict[str, str]]:
+    """为同一条操作链生成一条或多条同义问题。"""
+    rows = int(len(outcome.frame))
+    columns = [str(column) for column in outcome.frame.columns]
+    if hasattr(writer, "write_variants"):
+        return list(writer.write_variants(table, steps, rows=rows, columns=columns))
+    return [writer.write(table, steps, rows=rows, columns=columns)]
+
+
+def _record_sample(
+    *,
+    result: "BuildResult",
+    table: SyntheticTable,
+    steps: list[dict[str, Any]],
+    outcome: Any,
+    written: dict[str, str],
+    index: int,
+    parser: QuestionParser | None,
+    resolved: "BuildConfig",
+    results_dir: Path,
+    proposer: ChainProposer,
+    writer: QuestionWriter,
+) -> bool:
+    """校验一条问题并写入样本；成功返回 True。"""
+    question = str(written.get("question", "")).strip()
+    answer = str(written.get("answer", "")).strip()
+    if not question or not answer:
+        result.rejects.append(
+            _reject(table, "question_failed", "问题或预期答复为空", steps)
+        )
+        return False
+
+    consistency = "unverified"
+    if parser is not None and resolved.verify_questions:
+        parsed_steps, parse_error = _parse_with_repair(
+            parser,
+            table,
+            question,
+            max_steps=resolved.max_steps,
+            attempts=resolved.parse_attempts,
+        )
+        if parsed_steps is None:
+            result.rejects.append(
+                _reject(table, "question_mismatch", f"反向解析失败：{parse_error}", steps)
+            )
+            return False
+
+        # 主判据是执行结果是否一致：重命名等表现差异不影响判定，
+        # 但解析出不同的操作会产生不同结果，从而被拒绝。
+        replayed = execute_chain(table.frame, parsed_steps)
+        if not replayed.ok or replayed.frame is None:
+            result.rejects.append(
+                _reject(
+                    table,
+                    "question_mismatch",
+                    f"反向解析结果无法执行：{replayed.error}",
+                    steps,
+                )
+            )
+            return False
+        difference = _results_mismatch(outcome.frame, replayed.frame)
+        if difference:
+            result.rejects.append(
+                _reject(table, "question_mismatch", difference, steps)
+            )
+            return False
+        consistency = "llm_verified"
+    elif resolved.verify_questions:
+        consistency = "structural"
+
+    sample_id = f"{table.table_id}-{index:03d}"
+    artifact = _write_result_artifact(
+        outcome.frame, results_dir / f"{sample_id}.csv"
+    )
+    result.samples.append(
+        {
+            "sample_id": sample_id,
+            "source": dict(SOURCE),
+            "workbook_id": table.table_id,
+            "sheet": table.sheet,
+            "user_request": question,
+            "task_categories": categories_for(steps),
+            "difficulty": _difficulty(steps),
+            "expected_actions": steps,
+            "step_results": outcome.step_dicts(),
+            "expected_result": artifact,
+            "expected_response": answer,
+            "verification": {
+                "state": (
+                    "auto_passed"
+                    if consistency in {"llm_verified", "structural"}
+                    else "needs_review"
+                ),
+                "execution": "passed",
+                "question_consistency": consistency,
+                "checked_at": _now(),
+            },
+            "provenance": {
+                "proposer": proposer.__class__.__name__,
+                "writer": writer.__class__.__name__,
+                "prompt_version": "dataset-v1",
+                "created_at": _now(),
+            },
+        }
+    )
+    return True
+
+
 def build_dataset(
     tables: Iterable[SyntheticTable],
     *,
@@ -246,111 +359,24 @@ def build_dataset(
                 )
                 continue
 
-            try:
-                written = writer.write(
-                    table,
-                    steps,
-                    rows=int(len(outcome.frame)),
-                    columns=[str(column) for column in outcome.frame.columns],
-                )
-            except (ValueError, RuntimeError, KeyError) as error:
-                result.rejects.append(
-                    _reject(table, "question_failed", str(error), steps)
-                )
-                continue
+            for written in _question_variants(writer, table, steps, outcome):
+                if collected >= resolved.samples_per_table:
+                    break
 
-            question = str(written.get("question", "")).strip()
-            answer = str(written.get("answer", "")).strip()
-            if not question or not answer:
-                result.rejects.append(
-                    _reject(table, "question_failed", "问题或预期答复为空", steps)
-                )
-                continue
-
-            consistency = "unverified"
-            if parser is not None and resolved.verify_questions:
-                parsed_steps, parse_error = _parse_with_repair(
-                    parser,
-                    table,
-                    question,
-                    max_steps=resolved.max_steps,
-                    attempts=resolved.parse_attempts,
-                )
-                if parsed_steps is None:
-                    result.rejects.append(
-                        _reject(
-                            table,
-                            "question_mismatch",
-                            f"反向解析失败：{parse_error}",
-                            steps,
-                        )
-                    )
-                    continue
-
-                # 主判据是执行结果是否一致：重命名等表现差异不影响判定，
-                # 但解析出不同的操作会产生不同结果，从而被拒绝。
-                replayed = execute_chain(table.frame, parsed_steps)
-                if not replayed.ok or replayed.frame is None:
-                    result.rejects.append(
-                        _reject(
-                            table,
-                            "question_mismatch",
-                            f"反向解析结果无法执行：{replayed.error}",
-                            steps,
-                        )
-                    )
-                    continue
-                difference = _results_mismatch(outcome.frame, replayed.frame)
-                if difference:
-                    result.rejects.append(
-                        _reject(
-                            table,
-                            "question_mismatch",
-                            difference,
-                            steps,
-                        )
-                    )
-                    continue
-                consistency = "llm_verified"
-            elif resolved.verify_questions:
-                consistency = "structural"
-
-            sample_id = f"{table.table_id}-{collected + 1:03d}"
-            artifact = _write_result_artifact(
-                outcome.frame, results_dir / f"{sample_id}.csv"
-            )
-            result.samples.append(
-                {
-                    "sample_id": sample_id,
-                    "source": dict(SOURCE),
-                    "workbook_id": table.table_id,
-                    "sheet": table.sheet,
-                    "user_request": question,
-                    "task_categories": categories_for(steps),
-                    "difficulty": _difficulty(steps),
-                    "expected_actions": steps,
-                    "step_results": outcome.step_dicts(),
-                    "expected_result": artifact,
-                    "expected_response": answer,
-                    "verification": {
-                        "state": (
-                            "auto_passed"
-                            if consistency in {"llm_verified", "structural"}
-                            else "needs_review"
-                        ),
-                        "execution": "passed",
-                        "question_consistency": consistency,
-                        "checked_at": _now(),
-                    },
-                    "provenance": {
-                        "proposer": proposer.__class__.__name__,
-                        "writer": writer.__class__.__name__,
-                        "prompt_version": "dataset-v1",
-                        "created_at": _now(),
-                    },
-                }
-            )
-            collected += 1
+                if _record_sample(
+                    result=result,
+                    table=table,
+                    steps=steps,
+                    outcome=outcome,
+                    written=written,
+                    index=collected + 1,
+                    parser=parser,
+                    resolved=resolved,
+                    results_dir=results_dir,
+                    proposer=proposer,
+                    writer=writer,
+                ):
+                    collected += 1
 
     result.splits = stratified_split(
         result.samples,

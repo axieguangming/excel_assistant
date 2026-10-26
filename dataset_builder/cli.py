@@ -31,15 +31,18 @@ from dataset_builder.tables import (
 from dataset_builder.workspace import dated_run_dir, resolve_dataset_dir
 
 
-def _components(name: str):
+def _components(name: str, *, variants: int = 1, seed: int = 0):
     if name == "template":
         from dataset_builder.templates import (
             TemplateChainProposer,
             TemplateQuestionWriter,
         )
 
-        return TemplateChainProposer(), TemplateQuestionWriter(), None
-
+        return (
+            TemplateChainProposer(),
+            TemplateQuestionWriter(variants=variants, seed=seed),
+            None,
+        )
     if name == "llm":
         from dataset_builder.llm import (
             LLMChainProposer,
@@ -92,7 +95,9 @@ def _cmd_build(args: argparse.Namespace) -> int:
         # 用写盘后读回的表格建样本，真值与用户上传该文件后看到的数据完全一致。
         tables = load_tables(out_dir / "tables")
 
-    proposer, writer, parser = _components(args.proposer)
+    proposer, writer, parser = _components(
+        args.proposer, variants=args.variants, seed=args.seed
+    )
     result = build_dataset(
         tables,
         proposer=proposer,
@@ -222,6 +227,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="生成表格的文件格式；默认 xlsx，与真实用户上传的 Excel 一致",
     )
     build.add_argument("--per-table", type=int, default=6, help="每张表的目标样本数")
+    build.add_argument(
+        "--variants",
+        type=int,
+        default=1,
+        help="每条操作链生成多少条同义问法（仅 template 生效），用于增加措辞多样性",
+    )
     build.add_argument("--max-steps", type=int, default=4, help="操作链最大步数")
     build.add_argument("--max-attempts", type=int, default=12, help="每张表最多尝试的候选链")
     build.add_argument("--seed", type=int, default=20251023)

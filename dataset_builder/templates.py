@@ -6,8 +6,11 @@
 
 from __future__ import annotations
 
+import json
 import random
 from typing import Any, Iterable, Mapping
+
+import pandas as pd
 
 from dataset_builder.tables import SyntheticTable, column_kind
 
@@ -170,7 +173,26 @@ class TemplateChainProposer:
 
 
 class TemplateQuestionWriter:
-    """由操作链直接生成自然语言问题与预期答复。"""
+    """由操作链直接生成自然语言问题与预期答复。
+
+    同一操作链会生成多条不同措辞的问题（``variants``），因为固定句式重复上千次
+    会让训练数据退化成记忆模板，而不是学习理解需求。
+    """
+
+    # 每个模板用 {sheet} 与 {summary} 占位。
+    QUESTION_TEMPLATES: tuple[str, ...] = (
+        "请对{sheet}执行以下处理：{summary}。",
+        "在{sheet}里，{summary}。",
+        "{summary}，请直接在{sheet}上操作。",
+        "帮我处理一下{sheet}：{summary}。",
+        "基于{sheet}的数据，{summary}。",
+        "{sheet}需要这样处理：{summary}。",
+        "对{sheet}做这些操作——{summary}。",
+    )
+
+    def __init__(self, variants: int = 1, *, seed: int = 0):
+        self.variants = max(1, variants)
+        self.seed = seed
 
     def write(
         self,
@@ -181,11 +203,47 @@ class TemplateQuestionWriter:
         columns: list[str] | None = None,
     ) -> dict[str, str]:
         summary = summarize_steps(steps)
-        question = f"请对{table.sheet}执行以下处理：{summary}。"
         answer = f"已按要求完成操作：{summary}。"
         if rows is not None and columns is not None:
             answer += f"结果为 {rows} 行 × {len(columns)} 列。"
-        return {"question": question, "answer": answer}
+        return {
+            "question": self._question(table, summary, index=0),
+            "answer": answer,
+        }
+
+    def write_variants(
+        self,
+        table: SyntheticTable,
+        steps: list[dict[str, Any]],
+        *,
+        rows: int | None = None,
+        columns: list[str] | None = None,
+    ) -> list[dict[str, str]]:
+        """返回 ``variants`` 条同义问题，共享同一份预期答复。"""
+        summary = summarize_steps(steps)
+        answer = f"已按要求完成操作：{summary}。"
+        if rows is not None and columns is not None:
+            answer += f"结果为 {rows} 行 × {len(columns)} 列。"
+
+        seen: set[str] = set()
+        questions: list[str] = []
+        for index in range(self.variants):
+            question = self._question(table, summary, index=index)
+            if question in seen:
+                continue
+            seen.add(question)
+            questions.append(question)
+        return [{"question": q, "answer": answer} for q in questions]
+
+    def _question(self, table: SyntheticTable, summary: str, *, index: int) -> str:
+        # 用表名与序号选择模板，保证同一批数据里措辞分布稳定可复现。
+        offset = sum(ord(char) for char in table.table_id) + self.seed
+        template = self.QUESTION_TEMPLATES[(offset + index) % len(self.QUESTION_TEMPLATES)]
+        question = template.format(sheet=table.sheet, summary=summary)
+        # 模板拼接后可能出现"。。"或"，。"，统一收尾。
+        while "。。" in question:
+            question = question.replace("。。", "。")
+        return question.replace("，。", "。")
 
 
 def _numeric_columns(table: SyntheticTable) -> list[str]:
@@ -208,218 +266,270 @@ def _first_value(table: SyntheticTable, column: str) -> Any:
     values = table.frame[column].dropna()
     return values.iloc[0] if not values.empty else None
 
+def _distinct_values(table: SyntheticTable, column: str, limit: int = 3) -> list[str]:
+    values = table.frame[column].dropna()
+    seen: list[str] = []
+    for value in values:
+        text = str(value).strip()
+        if text and text not in seen:
+            seen.append(text)
+        if len(seen) >= limit:
+            break
+    return seen
+
+
+def _numeric_thresholds(table: SyntheticTable, column: str) -> list[float]:
+    """按分位数取几个阈值，避免所有表都用同一个 0。"""
+    values = pd.to_numeric(table.frame[column], errors="coerce").dropna()
+    if values.empty:
+        return []
+    quantiles = [0.25, 0.5, 0.75]
+    return sorted({round(float(values.quantile(q)), 2) for q in quantiles})
+
 
 def _candidates(table: SyntheticTable, *, max_steps: int) -> list[list[dict[str, Any]]]:
+    """系统地枚举候选操作链。
+
+    旧实现每张表只产出十几种链，导致上千条样本里唯一操作链不到百条。
+    这里按"列 × 操作符 × 参数 × 步数"组合展开，让规则生成也能有足够多样性。
+    """
     numeric = _numeric_columns(table)
-    text = _columns_by_kind(table, "text")
+    text = [column for column in _columns_by_kind(table, "text") if column != "备注"]
     datetimes = _columns_by_kind(table, "datetime")
 
     chains: list[list[dict[str, Any]]] = []
+    seen: set[str] = set()
 
-    if text:
-        column = text[0]
-        value = _first_value(table, column)
-        if value is not None:
-            chains.append(
-                [
-                    {
-                        "tool": "filter_rows",
-                        "args": {
-                            "filters": [
-                                {"column": column, "operator": "eq", "value": str(value)}
-                            ]
-                        },
-                    }
-                ]
-            )
-        chains.append(
-            [
-                {
-                    "tool": "filter_rows",
-                    "args": {
-                        "filters": [
-                            {"column": column, "operator": "not_empty", "value": None}
-                        ]
-                    },
-                }
-            ]
-        )
+    def add(chain: list[dict[str, Any]]) -> None:
+        if not chain or len(chain) > max_steps:
+            return
+        key = json.dumps(chain, ensure_ascii=False, sort_keys=True)
+        if key in seen:
+            return
+        seen.add(key)
+        chains.append(chain)
 
-    if numeric:
-        column = numeric[0]
-        chains.append(
-            [
-                {
-                    "tool": "filter_rows",
-                    "args": {
-                        "filters": [{"column": column, "operator": "gt", "value": 0}]
-                    },
-                }
-            ]
-        )
-        chains.append(
-            [{"tool": "sort_rows", "args": {"sort_by": [{"column": column, "ascending": False}]}}]
-        )
-        chains.append(
-            [
-                {
-                    "tool": "top_n_rows",
-                    "args": {
-                        "sort_by": [{"column": column, "ascending": False}],
-                        "limit": 10,
-                    },
-                }
-            ]
-        )
-        chains.append(
-            [
-                {
-                    "tool": "aggregate_data",
-                    "args": {
-                        "metrics": [{"column": column, "function": "sum"}],
-                    },
-                }
-            ]
-        )
-        chains.append(
-            [
-                {
-                    "tool": "describe_data",
-                    "args": {},
-                }
-            ]
-        )
+    # ---- 单步：筛选 ----
+    for column in text:
+        for value in _distinct_values(table, column):
+            add([{"tool": "filter_rows", "args": {"filters": [
+                {"column": column, "operator": "eq", "value": value}]}}])
+            add([{"tool": "filter_rows", "args": {"filters": [
+                {"column": column, "operator": "ne", "value": value}]}}])
+        for operator in ("is_empty", "not_empty"):
+            add([{"tool": "filter_rows", "args": {"filters": [
+                {"column": column, "operator": operator}]}}])
 
-    if numeric and text:
-        group = text[0]
-        chains.append(
-            [
-                {
-                    "tool": "aggregate_data",
-                    "args": {
-                        "group_by": [group],
-                        "metrics": [{"column": numeric[0], "function": "sum"}],
-                    },
-                }
-            ]
-        )
-        chains.append(
-            [
-                {
-                    "tool": "create_chart",
-                    "args": {
-                        "chart_type": "bar",
-                        "chart_x": group,
-                        "chart_y": numeric[0],
-                    },
-                }
-            ]
-        )
-        chains.append(
-            [
-                {
-                    "tool": "sort_rows",
-                    "args": {"sort_by": [{"column": group, "ascending": True}]},
-                },
-                {
-                    "tool": "top_n_rows",
-                    "args": {
-                        "sort_by": [{"column": numeric[0], "ascending": False}],
-                        "limit": 5,
-                    },
-                },
-            ]
-        )
+    for column in numeric:
+        for threshold in _numeric_thresholds(table, column):
+            for operator in ("gt", "gte", "lt", "lte"):
+                add([{"tool": "filter_rows", "args": {"filters": [
+                    {"column": column, "operator": operator, "value": threshold}]}}])
 
+    # 多条件筛选（AND）
     if len(numeric) >= 2:
-        chains.append(
-            [
-                {
-                    "tool": "add_computed_column",
-                    "args": {
-                        "name": "计算列",
-                        "operator": "multiply",
-                        "left": numeric[0],
-                        "right_column": numeric[1],
-                        "round_digits": 2,
-                    },
-                }
-            ]
-        )
+        left, right = numeric[0], numeric[1]
+        left_threshold = (_numeric_thresholds(table, left) or [0])[0]
+        right_threshold = (_numeric_thresholds(table, right) or [0])[0]
+        add([{"tool": "filter_rows", "args": {"filters": [
+            {"column": left, "operator": "gte", "value": left_threshold},
+            {"column": right, "operator": "lte", "value": right_threshold}]}}])
+    if text and numeric:
+        value = (_distinct_values(table, text[0]) or [None])[0]
+        if value is not None:
+            threshold = (_numeric_thresholds(table, numeric[0]) or [0])[0]
+            add([{"tool": "filter_rows", "args": {"filters": [
+                {"column": text[0], "operator": "eq", "value": value},
+                {"column": numeric[0], "operator": "gt", "value": threshold}]}}])
 
-    if text:
-        chains.append(
-            [
-                {
-                    "tool": "deduplicate_rows",
-                    "args": {"subset": [text[0]]},
-                }
-            ]
-        )
-        chains.append(
-            [
-                {
-                    "tool": "fill_missing_values",
-                    "args": {"fill_strategy": "ffill", "subset": [text[0]]},
-                }
-            ]
-        )
-
-    if numeric:
-        chains.append(
-            [
-                {
-                    "tool": "fill_missing_values",
-                    "args": {"fill_strategy": "value", "subset": [numeric[0]], "fill_value": 0},
-                }
-            ]
-        )
-
+    # ---- 单步：排序 / TopN ----
+    for column in numeric + datetimes:
+        for ascending in (True, False):
+            add([{"tool": "sort_rows", "args": {"sort_by": [
+                {"column": column, "ascending": ascending}]}}])
+    if len(numeric) >= 2:
+        add([{"tool": "sort_rows", "args": {"sort_by": [
+            {"column": numeric[0], "ascending": False},
+            {"column": numeric[1], "ascending": True}]}}])
     if datetimes and numeric:
-        chains.append(
-            [
-                {
-                    "tool": "sort_rows",
-                    "args": {
-                        "sort_by": [
-                            {"column": datetimes[0], "ascending": True},
-                            {"column": numeric[0], "ascending": False},
-                        ]
-                    },
-                }
-            ]
-        )
+        add([{"tool": "sort_rows", "args": {"sort_by": [
+            {"column": datetimes[0], "ascending": True},
+            {"column": numeric[0], "ascending": False}]}}])
 
-    if numeric and text:
-        chains.append(
-            [
-                {
-                    "tool": "filter_rows",
-                    "args": {
-                        "filters": [
-                            {"column": text[0], "operator": "not_empty", "value": None}
-                        ]
-                    },
-                },
-                {
-                    "tool": "aggregate_data",
-                    "args": {
+    for column in numeric:
+        for limit in (5, 10, 20):
+            for ascending in (False, True):
+                add([{"tool": "top_n_rows", "args": {
+                    "sort_by": [{"column": column, "ascending": ascending}],
+                    "limit": limit}}])
+
+    # ---- 单步：汇总 ----
+    for column in numeric:
+        for function in ("sum", "mean", "min", "max", "count", "nunique"):
+            add([{"tool": "aggregate_data", "args": {
+                "metrics": [{"column": column, "function": function}]}}])
+    for group in text:
+        for column in numeric:
+            for function in ("sum", "mean", "count"):
+                add([{"tool": "aggregate_data", "args": {
+                    "group_by": [group],
+                    "metrics": [{"column": column, "function": function}]}}])
+    if len(text) >= 2 and numeric:
+        add([{"tool": "aggregate_data", "args": {
+            "group_by": text[:2],
+            "metrics": [{"column": numeric[0], "function": "sum"}]}}])
+
+    # ---- 单步：去重 / 填补缺失 / 描述统计 ----
+    for column in text:
+        add([{"tool": "deduplicate_rows", "args": {"subset": [column]}}])
+    add([{"tool": "deduplicate_rows", "args": {}}])
+
+    for column in text + numeric:
+        add([{"tool": "fill_missing_values", "args": {
+            "fill_strategy": "ffill", "subset": [column]}}])
+        add([{"tool": "fill_missing_values", "args": {
+            "fill_strategy": "bfill", "subset": [column]}}])
+    for column in text:
+        add([{"tool": "fill_missing_values", "args": {
+            "fill_strategy": "value", "subset": [column], "fill_value": "未知"}}])
+    for column in numeric:
+        add([{"tool": "fill_missing_values", "args": {
+            "fill_strategy": "value", "subset": [column], "fill_value": 0}}])
+
+    add([{"tool": "describe_data", "args": {}}])
+
+    # ---- 单步：计算列 ----
+    for left in numeric:
+        for right in numeric:
+            if left == right:
+                continue
+            for operator in ("add", "subtract", "multiply", "divide"):
+                add([{"tool": "add_computed_column", "args": {
+                    "name": f"{left}_{operator}_{right}",
+                    "operator": operator,
+                    "left": left,
+                    "right_column": right,
+                    "round_digits": 2,
+                }}])
+        for operator, constant in (("multiply", 1.13), ("add", 100)):
+            add([{"tool": "add_computed_column", "args": {
+                "name": f"{left}_{operator}_{constant}",
+                "operator": operator,
+                "left": left,
+                "right_value": constant,
+                "round_digits": 2,
+            }}])
+
+    # ---- 单步：图表 ----
+    for column in numeric:
+        for chart_type in ("bar", "line", "pie"):
+            add([{"tool": "create_chart", "args": {
+                "chart_type": chart_type, "chart_y": column}}])
+    for group in text:
+        for column in numeric:
+            for chart_type in ("bar", "line", "pie"):
+                add([{"tool": "create_chart", "args": {
+                    "chart_type": chart_type,
+                    "chart_x": group,
+                    "chart_y": column}}])
+    if len(numeric) >= 2:
+        add([{"tool": "create_chart", "args": {
+            "chart_type": "scatter", "chart_x": numeric[0], "chart_y": numeric[1]}}])
+
+    # ---- 多步组合 ----
+    for group in text:
+        for column in numeric:
+            for function in ("sum", "mean"):
+                metric_name = f"{column}_{function}"
+                add([
+                    {"tool": "aggregate_data", "args": {
+                        "group_by": [group],
+                        "metrics": [{"column": column, "function": function,
+                                     "name": metric_name}]}},
+                    {"tool": "sort_rows", "args": {
+                        "sort_by": [{"column": metric_name, "ascending": False}]}},
+                ])
+                add([
+                    {"tool": "aggregate_data", "args": {
+                        "group_by": [group],
+                        "metrics": [{"column": column, "function": function,
+                                     "name": metric_name}]}},
+                    {"tool": "create_chart", "args": {
+                        "chart_type": "bar", "chart_x": group, "chart_y": metric_name}},
+                ])
+                add([
+                    {"tool": "aggregate_data", "args": {
+                        "group_by": [group],
+                        "metrics": [{"column": column, "function": function,
+                                     "name": metric_name}]}},
+                    {"tool": "top_n_rows", "args": {
+                        "sort_by": [{"column": metric_name, "ascending": False}],
+                        "limit": 5}},
+                ])
+
+    for column in numeric:
+        add([
+            {"tool": "filter_rows", "args": {"filters": [
+                {"column": column, "operator": "not_empty"}]}},
+            {"tool": "top_n_rows", "args": {
+                "sort_by": [{"column": column, "ascending": False}], "limit": 10}},
+        ])
+        add([
+            {"tool": "sort_rows", "args": {"sort_by": [
+                {"column": column, "ascending": False}]}},
+            {"tool": "top_n_rows", "args": {
+                "sort_by": [{"column": column, "ascending": False}], "limit": 5}},
+        ])
+
+    for left in numeric:
+        for right in numeric:
+            if left == right:
+                continue
+            name = f"{left}_x_{right}"
+            add([
+                {"tool": "add_computed_column", "args": {
+                    "name": name, "operator": "multiply",
+                    "left": left, "right_column": right, "round_digits": 2}},
+                {"tool": "top_n_rows", "args": {
+                    "sort_by": [{"column": name, "ascending": False}], "limit": 10}},
+            ])
+            if text:
+                add([
+                    {"tool": "add_computed_column", "args": {
+                        "name": name, "operator": "multiply",
+                        "left": left, "right_column": right, "round_digits": 2}},
+                    {"tool": "aggregate_data", "args": {
                         "group_by": [text[0]],
-                        "metrics": [
-                            {"column": numeric[0], "function": "sum"},
-                            {"column": numeric[0], "function": "count"},
-                        ],
-                    },
-                },
-                {
-                    "tool": "sort_rows",
-                    "args": {
-                        "sort_by": [
-                            {"column": f"{numeric[0]}_sum", "ascending": False}
-                        ]
-                    },
-                },
-            ]
-        )
+                        "metrics": [{"column": name, "function": "sum"}]}},
+                ])
 
-    return [chain for chain in chains if len(chain) <= max_steps]
+    if text and numeric:
+        value = (_distinct_values(table, text[0]) or [None])[0]
+        if value is not None:
+            add([
+                {"tool": "filter_rows", "args": {"filters": [
+                    {"column": text[0], "operator": "eq", "value": value}]}},
+                {"tool": "aggregate_data", "args": {
+                    "group_by": [text[0]],
+                    "metrics": [{"column": numeric[0], "function": "sum"}]}},
+                {"tool": "sort_rows", "args": {"sort_by": [
+                    {"column": f"{numeric[0]}_sum", "ascending": False}]}},
+            ])
+            add([
+                {"tool": "filter_rows", "args": {"filters": [
+                    {"column": text[0], "operator": "eq", "value": value}]}},
+                {"tool": "top_n_rows", "args": {
+                    "sort_by": [{"column": numeric[0], "ascending": False}],
+                    "limit": 10}},
+            ])
+
+    for group in text:
+        add([
+            {"tool": "fill_missing_values", "args": {
+                "fill_strategy": "ffill", "subset": [group]}},
+            {"tool": "aggregate_data", "args": {
+                "group_by": [group],
+                "metrics": [{"column": numeric[0], "function": "count"}]}},
+        ] if numeric else [])
+
+    return chains

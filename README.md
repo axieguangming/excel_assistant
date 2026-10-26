@@ -46,11 +46,11 @@ python desktop.py
 仓库提供用于微调与评测的离线数据集流水线，当前只生成仿真表格，默认输出 `.xlsx`（与用户实际上传的 Excel 文件一致）：
 
 ```powershell
-# 离线模板生成，不调用模型
+# 小样验证
 python -m dataset_builder.cli build --out datasets --table-count 6 --per-table 6
 
-# 使用已配置的远程模型生成操作链与自然语言问题（会产生 API 费用）
-python -m dataset_builder.cli build --out datasets --table-count 30 --per-table 10 --proposer llm
+# 规则方法批量生成约 1000 条（纯本地，无 API 费用）
+python -m dataset_builder.cli build --out datasets --table-count 45 --per-table 24 --max-attempts 30
 
 # 回放校验：重新执行期望操作链并核对结果（自动使用最新日期目录）
 python -m dataset_builder.cli replay --data datasets
