@@ -166,27 +166,39 @@ python -m dataset_builder.cli build --out datasets --table-count 6 --per-table 6
 python -m dataset_builder.cli build --out datasets --table-count 30 --per-table 10 --proposer llm
 
 # 复用已有表格，只用模型生成样本
-python -m dataset_builder.cli build --out datasets --tables-dir datasets/tables --per-table 8 --proposer llm
+python -m dataset_builder.cli build --out datasets --tables-dir datasets/2026-10-23/tables --per-table 8 --proposer llm
 
 # 需要 CSV 而不是 Excel 时显式指定
 python -m dataset_builder.cli build --out datasets --table-format csv
 
-# 回放校验：重新执行期望操作链，核对行数与列名
-python -m dataset_builder.cli replay --samples datasets/samples.jsonl --tables-dir datasets/tables
+# 让构建落到指定日期（便于复现历史批次）
+python -m dataset_builder.cli build --out datasets --date 2026-10-23
+
+# 回放校验：自动使用 datasets 下最新的日期目录
+python -m dataset_builder.cli replay --data datasets
 ```
 
-输出目录：
+输出目录（每次构建独立归档，同一天多次构建自动加序号）：
 
 ```
 datasets/
-  tables/index.json           # 表格索引、工作表名、列类型、来源许可
-  tables/<table_id>.xlsx      # 仿真表格（Excel）
-  samples.jsonl               # 通过的样本
-  rejects.jsonl               # 被拒样本及原因
-  results/<sample_id>.csv     # 最终结果真值
-  splits/{train,val,test}.jsonl
-  report.json                 # 覆盖度、拒绝原因、分区计数
+  2026-10-23/                  # 构建日期目录；同日再构建为 2026-10-23-2
+    tables/index.json          # 表格索引、工作表名、列类型、来源许可
+    tables/<table_id>.xlsx     # 仿真表格（Excel）
+    samples.jsonl              # 通过的样本
+    rejects.jsonl              # 被拒样本及原因
+    results/<sample_id>.csv    # 最终结果真值
+    splits/{train,val,test}.jsonl
+    report.json                # 覆盖度、拒绝原因、分区计数
+    eval-<split>-<model>.json  # 该数据集上的评测报告
 ```
+
+读命令（`replay` / `eval` / `resplit`）把 `--data datasets` 自动解析到**最新的日期目录**，
+也可以用 `--data datasets/2026-10-23` 指定历史批次。用 `--date 2026-10-23` 可以让构建
+落到指定日期；`--no-date-dir` 则退回旧行为（直接写进 `--out`，会覆盖同名文件）。
+
+这样安排的原因：一次构建会生成表格、样本、真值和报告一整组文件，写进同一目录会互相覆盖，
+而覆盖后既无法复现旧实验，也无法对比两次生成的数据差异。
 
 被拒原因：`invalid_chain`（工具或参数不合法）、`execution_failed`（列不存在、类型不适用等）、`question_failed`（问题生成失败）、`question_mismatch`（反向解析失败或执行结果与真值不一致）。
 

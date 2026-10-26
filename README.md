@@ -52,8 +52,8 @@ python -m dataset_builder.cli build --out datasets --table-count 6 --per-table 6
 # 使用已配置的远程模型生成操作链与自然语言问题（会产生 API 费用）
 python -m dataset_builder.cli build --out datasets --table-count 30 --per-table 10 --proposer llm
 
-# 回放校验：重新执行期望操作链并核对结果
-python -m dataset_builder.cli replay --samples datasets/samples.jsonl --tables-dir datasets/tables
+# 回放校验：重新执行期望操作链并核对结果（自动使用最新日期目录）
+python -m dataset_builder.cli replay --data datasets
 
 # 在冻结测试集上评测模型（驱动真实 Agent）
 python -m dataset_builder.cli eval --data datasets --split test
@@ -61,6 +61,8 @@ python -m dataset_builder.cli eval --data datasets --split test
 # 用分层抽样重新划分已有样本（不重新调用模型）
 python -m dataset_builder.cli resplit --data datasets --seed 20251023
 ```
+
+每次构建都会写入独立目录 `datasets/YYYY-MM-DD/`（同日再构建自动加 `-2` 等序号），旧批次不会被覆盖；读命令自动解析到最新的日期目录，也可以指定 `--data datasets/2026-10-23` 使用历史批次。
 
 输出包含表格索引、样本、结果真值、拒绝原因、按工作簿分组的训练/验证/测试划分与覆盖度报告。样本真值在 **Excel 读回后的表格**上计算，因此与用户上传同一文件后得到的数据一致。详见 [docs/dataset-plan.md](./docs/dataset-plan.md)。`datasets/` 为本地生成目录，不纳入版本控制。
 
