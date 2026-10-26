@@ -118,6 +118,44 @@ def _cmd_replay(args: argparse.Namespace) -> int:
     return 0 if not report["mismatches"] else 1
 
 
+def _cmd_resplit(args: argparse.Namespace) -> int:
+    """重新划分已有样本，不重新调用模型（省时省钱）。"""
+    from dataset_builder.split import coverage_summary, find_leaks, stratified_split
+
+    root = Path(args.data)
+    samples_path = root / "samples.jsonl"
+    if not samples_path.is_file():
+        print(f"找不到样本文件：{samples_path}", file=sys.stderr)
+        return 2
+
+    samples = read_jsonl(samples_path)
+    if not samples:
+        print(f"{samples_path} 中没有样本。", file=sys.stderr)
+        return 2
+
+    splits = stratified_split(
+        samples,
+        seed=args.seed,
+        min_eval_workbooks=args.min_eval_workbooks,
+    )
+    leaks = find_leaks(splits)
+    if leaks:
+        print(f"检测到工作簿泄漏：{leaks}", file=sys.stderr)
+        return 1
+
+    for name, items in splits.items():
+        path = root / "splits" / f"{name}.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in items),
+            encoding="utf-8",
+        )
+
+    summary = coverage_summary(splits)
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    return 0
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="dataset_builder")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -181,6 +219,19 @@ def _build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--temperature", type=float, default=0.0)
     evaluate.add_argument("--out", default="datasets/eval-report.json")
     evaluate.set_defaults(func=_cmd_eval)
+
+    resplit = subparsers.add_parser(
+        "resplit", help="用分层抽样重新划分已有样本（不调用模型）"
+    )
+    resplit.add_argument("--data", default="datasets", help="数据集根目录")
+    resplit.add_argument("--seed", type=int, default=0)
+    resplit.add_argument(
+        "--min-eval-workbooks",
+        type=int,
+        default=2,
+        help="val/test 至少包含的工作簿数，用于保证类别覆盖",
+    )
+    resplit.set_defaults(func=_cmd_resplit)
 
     return parser
 

@@ -10,7 +10,7 @@ from dataset_builder.pipeline import (
     replay_samples,
     write_build_result,
 )
-from dataset_builder.split import find_leaks, grouped_split
+from dataset_builder.split import coverage_summary, find_leaks, stratified_split
 from dataset_builder.tables import generate_tables, load_tables, save_tables
 from dataset_builder.templates import TemplateChainProposer, TemplateQuestionWriter
 
@@ -331,28 +331,110 @@ class PipelineTests(unittest.TestCase):
 class SplitTests(unittest.TestCase):
     def test_groups_are_not_shared_between_splits(self):
         samples = [
-            {"sample_id": f"s{index}", "workbook_id": f"w{index // 3}"}
+            {
+                "sample_id": f"s{index}",
+                "workbook_id": f"w{index // 3}",
+                "task_categories": ["aggregate"],
+            }
             for index in range(30)
         ]
-        splits = grouped_split(samples, seed=3)
+        splits = stratified_split(samples, seed=3)
 
         self.assertEqual(find_leaks(splits), [])
-        self.assertEqual(
-            sum(len(items) for items in splits.values()), len(samples)
-        )
+        self.assertEqual(sum(len(items) for items in splits.values()), len(samples))
 
     def test_small_group_counts_still_receive_partitions(self):
         samples = [
-            {"sample_id": f"s{index}", "workbook_id": f"w{index}"}
+            {
+                "sample_id": f"s{index}",
+                "workbook_id": f"w{index}",
+                "task_categories": ["sort"],
+            }
             for index in range(3)
         ]
-        splits = grouped_split(samples, seed=1)
+        splits = stratified_split(samples, seed=1)
 
         self.assertTrue(all(splits[name] for name in ("train", "val", "test")))
 
     def test_invalid_ratios_are_rejected(self):
         with self.assertRaises(ValueError):
-            grouped_split([], ratios=(0.0, 0.0, 0.0))
+            stratified_split([], ratios=(0.0, 0.0, 0.0))
+
+    def test_empty_input_returns_empty_splits(self):
+        splits = stratified_split([])
+
+        self.assertEqual(splits, {"train": [], "val": [], "test": []})
+
+    def test_eval_splits_get_at_least_two_workbooks(self):
+        samples = [
+            {
+                "sample_id": f"s{book}-{index}",
+                "workbook_id": f"w{book}",
+                "task_categories": ["filter"],
+            }
+            for book in range(12)
+            for index in range(3)
+        ]
+        splits = stratified_split(samples, seed=0, min_eval_workbooks=2)
+
+        for name in ("val", "test"):
+            workbooks = {item["workbook_id"] for item in splits[name]}
+            self.assertGreaterEqual(len(workbooks), 2, f"{name} 工作簿过少")
+        self.assertTrue(splits["train"])
+
+    def test_test_split_maximises_category_coverage(self):
+        """测试集应尽量覆盖多种任务类别，而不是随机落在一类上。"""
+        samples = []
+        category_sets = [
+            ["aggregate", "chart", "sort"],
+            ["filter", "top_n"],
+            ["dedupe", "fill_missing"],
+            ["computed_column", "describe"],
+            ["aggregate"],
+            ["sort"],
+            ["chart"],
+            ["filter"],
+            ["top_n"],
+            ["describe"],
+            ["computed_column"],
+            ["dedupe"],
+        ]
+        for index, categories in enumerate(category_sets):
+            samples.append(
+                {
+                    "sample_id": f"s{index}",
+                    "workbook_id": f"w{index}",
+                    "task_categories": categories,
+                }
+            )
+
+        splits = stratified_split(samples, seed=7, min_eval_workbooks=2)
+        summary = coverage_summary(splits)
+
+        self.assertGreaterEqual(len(summary["test"]["categories"]), 5)
+        self.assertGreaterEqual(len(summary["val"]["categories"]), 3)
+
+    def test_one_workbook_is_left_for_training(self):
+        samples = [
+            {"sample_id": "s0", "workbook_id": "w0", "task_categories": ["sort"]},
+            {"sample_id": "s1", "workbook_id": "w1", "task_categories": ["filter"]},
+            {"sample_id": "s2", "workbook_id": "w2", "task_categories": ["chart"]},
+        ]
+        splits = stratified_split(samples, seed=0, min_eval_workbooks=2)
+
+        self.assertGreaterEqual(len({item["workbook_id"] for item in splits["train"]}), 1)
+
+    def test_coverage_summary_reports_counts(self):
+        samples = [
+            {"sample_id": "s0", "workbook_id": "w0", "task_categories": ["chart"]},
+            {"sample_id": "s1", "workbook_id": "w0", "task_categories": ["chart", "sort"]},
+        ]
+        summary = coverage_summary({"train": samples, "val": [], "test": []})
+
+        self.assertEqual(summary["train"]["samples"], 2)
+        self.assertEqual(summary["train"]["workbooks"], 1)
+        self.assertEqual(summary["train"]["charts"], 2)
+        self.assertEqual(summary["train"]["categories"], ["chart", "sort"])
 
 
 def read_csv_rows(path: Path) -> list[str]:

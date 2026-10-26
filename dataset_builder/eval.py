@@ -53,6 +53,8 @@ class SampleResult:
     hit_turn_limit: bool = False
     failure: str = ""
     planned_tools: list[str] = field(default_factory=list)
+    expects_chart: bool = False
+    chart_produced: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -70,6 +72,8 @@ class SampleResult:
             "turns": self.turns,
             "hit_turn_limit": self.hit_turn_limit,
             "planned_tools": self.planned_tools,
+            "expects_chart": self.expects_chart,
+            "chart_produced": self.chart_produced,
             "failure": self.failure,
         }
 
@@ -97,6 +101,7 @@ class EvalReport:
         for bucket in categories.values():
             bucket["success_rate"] = round(bucket["success"] / bucket["samples"], 4)
 
+        chart_samples = [sample for sample in self.samples if sample.expects_chart]
         return {
             "samples": total,
             "task_success_rate": rate(lambda s: s.task_success),
@@ -109,6 +114,16 @@ class EvalReport:
                 sum(sample.tool_steps for sample in self.samples) / total, 2
             ),
             "avg_turns": round(sum(sample.turns for sample in self.samples) / total, 2),
+            "chart_samples": len(chart_samples),
+            "chart_produced_rate": (
+                round(
+                    sum(1 for sample in chart_samples if sample.chart_produced)
+                    / len(chart_samples),
+                    4,
+                )
+                if chart_samples
+                else 0.0
+            ),
             "by_category": dict(sorted(categories.items())),
         }
 
@@ -249,6 +264,22 @@ def _initial_state(df: pd.DataFrame, question: str) -> dict[str, Any]:
     }
 
 
+def _expects_chart(steps: list[dict[str, Any]]) -> bool:
+    return any(step.get("tool") == "create_chart" for step in steps)
+
+
+def _chart_ready(url: object) -> bool:
+    """确认工具确实产出了一张已落盘的图表。"""
+    if not isinstance(url, str) or not url.strip():
+        return False
+    filename = url.rstrip("/").rsplit("/", 1)[-1]
+    if not filename:
+        return False
+    import excel_ops
+
+    return (Path(excel_ops.OUTPUT_DIR) / filename).is_file()
+
+
 def evaluate_sample(
     sample: Mapping[str, Any],
     tables: Mapping[str, SyntheticTable],
@@ -267,6 +298,7 @@ def evaluate_sample(
         return result
 
     expected_steps = _expected_steps(sample)
+    result.expects_chart = _expects_chart(expected_steps)
     expected_artifact = (sample.get("expected_result") or {}).get("artifact")
     if not expected_artifact:
         result.failure = "missing_expected_result"
@@ -293,8 +325,21 @@ def evaluate_sample(
     )
     result.tool_sequence_match = planned_tools == [step["tool"] for step in expected_steps]
     result.args_match = _args_match(planned, expected_steps)
+    result.chart_produced = _chart_ready(outcome.get("chart_file"))
 
     actual_frame = outcome.get("result_df")
+
+    # 图表类任务：create_chart 不写 result_df，若仍按"必须有结果表"判定，
+    # 失败原因会被误报为 no_result，掩盖"没画图"或"前置步骤缺失"。
+    if result.expects_chart and not result.chart_produced:
+        result.failure = "no_chart" if planned_tools else "no_tool_call"
+        return result
+
+    if actual_frame is None and result.expects_chart:
+        # create_chart 不写 result_df；图表类任务用当前数据状态当结果表，
+        # 这样"只画图不改数据"的任务也能按数据是否正确判定。
+        actual_frame = outcome.get("current_df")
+
     if actual_frame is None:
         result.failure = "no_result"
         return result
@@ -303,7 +348,9 @@ def evaluate_sample(
     result.task_success = ordered_match
     result.task_success_unordered = ordered_match or reason == "行内容一致但顺序不同"
     if not ordered_match:
-        result.failure = reason
+        result.failure = (
+            "chart_ok_but_data_mismatch" if result.expects_chart else reason
+        )
     return result
 
 
@@ -341,12 +388,21 @@ def evaluate(
 
     previous_llm = agent.llm
     agent.llm = llm
+
+    # 评测会产生图表文件；重定向到临时目录，避免污染用户的 outputs 目录。
+    import excel_ops
+
+    previous_output_dir = excel_ops.OUTPUT_DIR
+    chart_dir = root / "eval_charts"
+    chart_dir.mkdir(parents=True, exist_ok=True)
+    excel_ops.OUTPUT_DIR = str(chart_dir)
     try:
         for sample in samples:
             report.samples.append(
                 evaluate_sample(sample, tables, dataset_root=root)
             )
     finally:
+        excel_ops.OUTPUT_DIR = previous_output_dir
         agent.llm = previous_llm
 
     return report
@@ -393,6 +449,11 @@ def format_summary(report: EvalReport) -> str:
         f"平均工具调用次数  : {metrics.get('avg_tool_steps', 0)}",
         f"平均模型轮数      : {metrics.get('avg_turns', 0)}",
     ]
+    if metrics.get("chart_samples"):
+        lines.append(
+            f"图表产出率        : {metrics.get('chart_produced_rate', 0):.2%}"
+            f"（{metrics['chart_samples']} 条图表任务）"
+        )
     by_category = metrics.get("by_category") or {}
     if by_category:
         lines.append("")

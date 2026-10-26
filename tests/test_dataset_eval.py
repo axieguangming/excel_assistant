@@ -7,8 +7,10 @@ import pandas as pd
 from langchain_core.messages import AIMessage
 
 import agent
+import excel_ops
 from dataset_builder.eval import (
     EvalConfig,
+    EvalReport,
     compare_frames,
     evaluate,
     evaluate_sample,
@@ -24,6 +26,7 @@ from dataset_builder.pipeline import (
 )
 from dataset_builder.tables import generate_tables, load_tables, save_tables
 from dataset_builder.templates import TemplateChainProposer, TemplateQuestionWriter
+from schemas import Metric
 
 
 def tool_call(name, args, call_id):
@@ -182,6 +185,7 @@ class EvaluateTests(unittest.TestCase):
         self.assertFalse(outcome.task_success)
         self.assertIn("missing_artifact", outcome.failure)
 
+
     def test_missing_split_raises_clear_error(self):
         empty_root = Path(self._tmp.name) / "empty"
         empty_root.mkdir()
@@ -273,6 +277,169 @@ class EvaluateTests(unittest.TestCase):
             )
 
         self.assertIs(agent.llm, sentinel)
+
+
+
+
+class ChartVerdictTests(unittest.TestCase):
+    """图表任务必须按"是否真的画出图"判定，而不是"是否产生结果表"。"""
+
+    def setUp(self):
+        self.previous_llm = agent.llm
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        tables = generate_tables(1, seed=401)
+        save_tables(tables, self.root / "tables")
+        self.table = load_tables(self.root / "tables")[0]
+
+        # 期望值取自真实工具输出，保证"完整执行应判定成功"这一断言本身可靠。
+        expected_frame = excel_ops._aggregate(
+            self.table.frame,
+            ["区域"],
+            [Metric(column="销售额", function="sum")],
+        )
+        artifact = self.root / "results" / "chart-sample.csv"
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        expected_frame.to_csv(artifact, index=False, encoding="utf-8-sig")
+
+        self.sample = {
+            "sample_id": "chart-1",
+            "workbook_id": self.table.table_id,
+            "user_request": "按区域汇总销售额并画柱状图",
+            "task_categories": ["aggregate", "chart"],
+            "difficulty": "multi_step",
+            "expected_actions": [
+                {
+                    "tool": "aggregate_data",
+                    "args": {
+                        "group_by": ["区域"],
+                        "metrics": [{"column": "销售额", "function": "sum"}],
+                    },
+                },
+                {
+                    "tool": "create_chart",
+                    "args": {
+                        "chart_type": "bar",
+                        "chart_x": "区域",
+                        "chart_y": "销售额_sum",
+                    },
+                },
+            ],
+            "expected_result": {"artifact": "results/chart-sample.csv", "row_count": 2},
+        }
+
+        self.previous_output = excel_ops.OUTPUT_DIR
+        self.chart_dir = self.root / "charts"
+        self.chart_dir.mkdir(exist_ok=True)
+        excel_ops.OUTPUT_DIR = str(self.chart_dir)
+
+    def tearDown(self):
+        excel_ops.OUTPUT_DIR = self.previous_output
+        agent.llm = self.previous_llm
+        self._tmp.cleanup()
+
+    def _agent(self, calls):
+        class Model:
+            def bind_tools(self, tools):
+                return self
+
+            def invoke(self, messages):
+                index = sum(1 for message in messages if message.type == "ai")
+                if index < len(calls):
+                    name, args = calls[index]
+                    return tool_call(name, args, f"c{index}")
+                return AIMessage(content="已完成。")
+
+        return Model()
+
+    def _evaluate(self):
+        return evaluate_sample(
+            self.sample,
+            {self.table.table_id: self.table},
+            dataset_root=self.root,
+        )
+
+    def test_failed_chart_tool_is_reported_as_no_chart(self):
+        """create_chart 执行失败时，原因应是 no_chart，而不是含混的 no_result。"""
+        agent.llm = self._agent(
+            [("create_chart", {"chart_type": "bar", "chart_x": "区域", "chart_y": "不存在的列"})]
+        )
+
+        outcome = self._evaluate()
+
+        self.assertTrue(outcome.expects_chart)
+        self.assertFalse(outcome.chart_produced)
+        self.assertEqual(outcome.failure, "no_chart")
+        self.assertFalse(outcome.task_success)
+
+    def test_no_tool_call_at_all_is_distinguished(self):
+        agent.llm = WrongToolModel()
+
+        outcome = self._evaluate()
+
+        self.assertEqual(outcome.failure, "no_tool_call")
+
+    def test_chart_without_preceding_aggregate_fails_on_data(self):
+        """画出图但少了汇总步骤：有图、数据不对，应单独报告。"""
+        agent.llm = self._agent(
+            [("create_chart", {"chart_type": "bar", "chart_x": "区域", "chart_y": "销售额"})]
+        )
+
+        outcome = self._evaluate()
+
+        self.assertTrue(outcome.chart_produced, outcome.failure)
+        self.assertFalse(outcome.task_success)
+        self.assertEqual(outcome.failure, "chart_ok_but_data_mismatch")
+
+    def test_complete_chart_task_counts_as_success(self):
+        agent.llm = self._agent(
+            [
+                (
+                    "aggregate_data",
+                    {
+                        "group_by": ["区域"],
+                        "metrics": [{"column": "销售额", "function": "sum"}],
+                    },
+                ),
+                (
+                    "create_chart",
+                    {"chart_type": "bar", "chart_x": "区域", "chart_y": "销售额_sum"},
+                ),
+            ]
+        )
+
+        outcome = self._evaluate()
+
+        self.assertTrue(outcome.chart_produced, outcome.failure)
+        self.assertTrue(outcome.task_success, outcome.failure)
+        self.assertEqual(outcome.failure, "")
+
+    def test_chart_metrics_include_production_rate(self):
+        agent.llm = self._agent(
+            [("create_chart", {"chart_type": "bar", "chart_x": "区域", "chart_y": "销售额"})]
+        )
+
+        report = EvalReport(config={})
+        report.samples.append(self._evaluate())
+
+        metrics = report.metrics
+        self.assertEqual(metrics["chart_samples"], 1)
+        self.assertEqual(metrics["chart_produced_rate"], 1.0)
+
+    def test_non_chart_samples_do_not_affect_chart_rate(self):
+        agent.llm = self._agent([("describe_data", {})])
+        non_chart = dict(self.sample)
+        non_chart["expected_actions"] = [{"tool": "describe_data", "args": {}}]
+        non_chart["task_categories"] = ["describe"]
+
+        result = evaluate_sample(
+            non_chart, {self.table.table_id: self.table}, dataset_root=self.root
+        )
+        report = EvalReport(config={})
+        report.samples.append(result)
+
+        self.assertFalse(result.expects_chart)
+        self.assertEqual(report.metrics["chart_samples"], 0)
 
 
 if __name__ == "__main__":

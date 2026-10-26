@@ -490,6 +490,15 @@ def describe_data(
     )
 
 
+def _category_labels(values: pd.Series) -> pd.Series:
+    """转成纯字符串标签。
+
+    matplotlib 的类别轴拒绝把 NaN（float）注册为类别，因此缺失值必须先换成
+    占位字符串，否则"类别列有空值"这类很常见的数据会让所有柱状/折线/饼图崩溃。
+    """
+    return values.astype("string").fillna("(空)").astype(str)
+
+
 def _create_chart(df: pd.DataFrame, chart: CreateChartInput) -> str:
     columns = [chart.chart_y, *([chart.chart_x] if chart.chart_x else [])]
     _validate_columns(df, columns)
@@ -498,15 +507,19 @@ def _create_chart(df: pd.DataFrame, chart: CreateChartInput) -> str:
     plt.rcParams["axes.unicode_minus"] = False
     figure, axis = plt.subplots(figsize=(9, 5))
     try:
-        labels = df[chart.chart_x] if chart.chart_x else df.index.astype(str)
+        labels = (
+            _category_labels(df[chart.chart_x])
+            if chart.chart_x
+            else pd.Series(df.index.astype(str), index=df.index)
+        )
         values = pd.to_numeric(df[chart.chart_y], errors="coerce")
         if values.notna().sum() == 0:
             raise ValueError(f"图表字段“{chart.chart_y}”没有可用数值。")
 
         if chart.chart_type == "bar":
-            axis.bar(labels.astype(str), values)
+            axis.bar(labels, values)
         elif chart.chart_type == "line":
-            axis.plot(labels.astype(str), values, marker="o")
+            axis.plot(labels, values, marker="o")
         elif chart.chart_type == "scatter":
             x_values = pd.to_numeric(df[chart.chart_x], errors="coerce")
             valid = x_values.notna() & values.notna()
@@ -516,7 +529,7 @@ def _create_chart(df: pd.DataFrame, chart: CreateChartInput) -> str:
             valid = values.notna()
             if (values[valid] < 0).any() or values[valid].sum() <= 0:
                 raise ValueError("饼图需要非负且总和大于零的数据。")
-            axis.pie(values[valid], labels=labels[valid].astype(str), autopct="%1.1f%%")
+            axis.pie(values[valid], labels=labels[valid], autopct="%1.1f%%")
 
         if chart.chart_type != "pie":
             axis.set_xlabel(chart.chart_x or "类别")

@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 
 import pandas as pd
 from pydantic import ValidationError
@@ -233,6 +234,44 @@ class ExcelOperationTests(unittest.TestCase):
 
     def test_computed_column_is_registered_as_agent_tool(self):
         self.assertIn("add_computed_column", {item.name for item in excel_ops.EXCEL_TOOLS})
+
+    def test_chart_handles_missing_category_values(self):
+        """类别列有空值时也必须能画图（matplotlib 拒绝把 NaN 当类别）。"""
+        import tempfile
+
+        from schemas import CreateChartInput
+
+        frame = pd.DataFrame(
+            {"区域": ["东", None, "西"], "销售额": [100.0, 50.0, 80.0]}
+        )
+        previous = excel_ops.OUTPUT_DIR
+        with tempfile.TemporaryDirectory() as directory:
+            excel_ops.OUTPUT_DIR = directory
+            try:
+                for chart_type in ("bar", "line", "pie"):
+                    with self.subTest(chart_type=chart_type):
+                        url = excel_ops._create_chart(
+                            frame,
+                            CreateChartInput(
+                                chart_type=chart_type,
+                                chart_x="区域",
+                                chart_y="销售额",
+                            ),
+                        )
+                        self.assertTrue(url.startswith("/api/chart/"))
+                        filename = url.rsplit("/", 1)[-1]
+                        self.assertTrue(
+                            (Path(directory) / filename).is_file(),
+                            "图表文件未生成",
+                        )
+            finally:
+                excel_ops.OUTPUT_DIR = previous
+
+    def test_category_labels_replace_missing_values(self):
+        labels = excel_ops._category_labels(pd.Series(["东", None, "西"]))
+
+        self.assertEqual(labels.tolist(), ["东", "(空)", "西"])
+        self.assertTrue(all(isinstance(value, str) for value in labels))
 
     def test_tool_executor_does_not_modify_source_dataframe(self):
         frame = pd.DataFrame({"值": [1, None]})

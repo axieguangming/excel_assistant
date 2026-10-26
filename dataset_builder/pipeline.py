@@ -18,7 +18,7 @@ from dataset_builder.chain import (
     normalize_chain,
 )
 from dataset_builder.executor import execute_chain
-from dataset_builder.split import grouped_split
+from dataset_builder.split import stratified_split
 from dataset_builder.tables import SOURCE, SyntheticTable
 from dataset_builder.templates import categories_for
 
@@ -58,6 +58,7 @@ class BuildConfig:
     parse_attempts: int = 2
     split_ratios: tuple[float, float, float] = (0.8, 0.1, 0.1)
     split_seed: int = 0
+    min_eval_workbooks: int = 2
 
 
 @dataclass
@@ -351,10 +352,11 @@ def build_dataset(
             )
             collected += 1
 
-    result.splits = grouped_split(
+    result.splits = stratified_split(
         result.samples,
         ratios=resolved.split_ratios,
         seed=resolved.split_seed,
+        min_eval_workbooks=resolved.min_eval_workbooks,
     )
     result.report = _build_report(result, tables=table_list)
     return result
