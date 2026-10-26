@@ -11,3 +11,7 @@ vibe_images/
 data/
 llm_config.json
 datasets/
+# 本地推理运行时与模型文件（体积大，不入库）
+models/
+llama/
+*.gguf
