@@ -68,6 +68,19 @@ python -m dataset_builder.cli resplit --data datasets --seed 20251023
 
 本地小模型（Qwen2.5-1.5B + llama.cpp）的基线与打包注意事项见 [docs/local-model.md](./docs/local-model.md)。
 
+## 微调
+
+`finetune/` 提供把数据集转成对话轨迹并用 LoRA 微调的示例：
+
+```powershell
+python -m pip install -r requirements-train.txt
+python finetune/convert.py --data datasets --out build/sft
+python finetune/train_lora.py --data build/sft --output build/lora-out
+```
+
+轨迹里的中间观察结果是真实执行的，system prompt 与工具 schema 直接复用线上代码。
+详见 [finetune/README.md](./finetune/README.md)。
+
 ## 文档
 
 - [Excel Agent 微调数据集构造方案](./docs/dataset-plan.md)
