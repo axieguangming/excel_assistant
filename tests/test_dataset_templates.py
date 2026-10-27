@@ -1,3 +1,4 @@
+import json
 import unittest
 
 from dataset_builder.chain import canonical_chain, normalize_chain
@@ -26,8 +27,9 @@ class TemplateProposerTests(unittest.TestCase):
         signatures = {tuple(categories_for(chain)) for chain in chains}
 
         self.assertIn(("chart",), signatures)
-        self.assertIn(("sort", "top_n"), signatures)
+        self.assertIn(("filter", "top_n"), signatures)
         self.assertIn(("aggregate",), signatures)
+        self.assertIn(("aggregate", "chart"), signatures)
 
     def test_candidate_pool_is_large_enough_for_bulk_generation(self):
         """规则生成要能支撑上千条样本，候选链不能只有十几种。"""
@@ -83,6 +85,212 @@ class TemplateProposerTests(unittest.TestCase):
         self.assertTrue(chains)
         for chain in chains:
             self.assertEqual([step["tool"] for step in chain], ["describe_data"])
+
+    def test_chart_candidates_include_aggregate_before_plotting(self):
+        """绘图任务要覆盖"先分组汇总再画图"，因为原始行粒度常与图表语义不符。"""
+        table = generate_tables(1, seed=20261026, domains=["sales_orders"])[0]
+
+        chains = TemplateChainProposer().propose(table, 2000, max_steps=4)
+        chart_chains = [
+            chain for chain in chains
+            if any(step["tool"] == "create_chart" for step in chain)
+        ]
+        aggregated = [
+            chain for chain in chart_chains
+            if any(step["tool"] == "aggregate_data" for step in chain)
+        ]
+
+        self.assertGreater(len(chart_chains), 50)
+        self.assertGreater(len(aggregated), len(chart_chains) // 2)
+
+    def test_chart_candidates_still_include_single_step(self):
+        table = generate_tables(1, seed=20261026, domains=["sales_orders"])[0]
+
+        chains = TemplateChainProposer().propose(table, 2000, max_steps=4)
+        single_chart = [
+            chain for chain in chains
+            if len(chain) == 1 and chain[0]["tool"] == "create_chart"
+        ]
+
+        self.assertGreater(len(single_chart), 10)
+
+    def test_aggregate_chart_uses_aggregated_column_name(self):
+        table = generate_tables(1, seed=20261026, domains=["sales_orders"])[0]
+
+        chains = TemplateChainProposer().propose(table, 2000, max_steps=4)
+        pairs = [
+            (chain[0]["args"], chain[-1]["args"])
+            for chain in chains
+            if len(chain) == 2
+            and chain[0]["tool"] == "aggregate_data"
+            and chain[1]["tool"] == "create_chart"
+        ]
+
+        self.assertTrue(pairs)
+        for aggregate_args, chart_args in pairs:
+            produced = {
+                metric.get("name")
+                or f"{metric['column']}_{metric['function']}"
+                for metric in aggregate_args["metrics"]
+            }
+            self.assertIn(chart_args["chart_y"], produced)
+
+    def test_chart_candidates_cover_multiple_chart_types(self):
+        table = generate_tables(1, seed=20261026, domains=["sales_orders"])[0]
+
+        chains = TemplateChainProposer().propose(table, 2000, max_steps=4)
+        types = {
+            step["args"]["chart_type"]
+            for chain in chains
+            for step in chain
+            if step["tool"] == "create_chart"
+        }
+
+        self.assertIn("bar", types)
+        self.assertIn("pie", types)
+        self.assertIn("line", types)
+
+    def test_chart_after_sort_is_generated(self):
+        table = generate_tables(1, seed=20261026, domains=["sales_orders"])[0]
+
+        chains = TemplateChainProposer().propose(table, 2000, max_steps=4)
+        sorted_charts = [
+            chain for chain in chains
+            if [step["tool"] for step in chain]
+            == ["aggregate_data", "sort_rows", "create_chart"]
+        ]
+
+        self.assertTrue(sorted_charts)
+
+    def test_all_empty_columns_are_excluded_from_candidates(self):
+        """全空列在 pandas 里会被推断成 float64，不能当作数值列参与任务生成。"""
+        import pandas as pd
+
+        from dataset_builder.tables import SyntheticTable
+        from dataset_builder.templates import _columns_by_kind, _numeric_columns
+
+        frame = pd.DataFrame(
+            {
+                "区域": ["东", "西", "南"],
+                "销售额": [100.0, 200.0, 300.0],
+                "备注": [None, None, None],
+            }
+        )
+        table = SyntheticTable(
+            table_id="t-empty", domain="sales_orders", sheet="表", frame=frame
+        )
+
+        self.assertEqual(_numeric_columns(table), ["销售额"])
+        self.assertNotIn("备注", _columns_by_kind(table, "text"))
+        self.assertNotIn("备注", _columns_by_kind(table, "numeric"))
+
+    def test_candidates_never_reference_all_empty_columns(self):
+        import pandas as pd
+
+        from dataset_builder.tables import SyntheticTable
+
+        frame = pd.DataFrame(
+            {
+                "区域": ["东", "西", "南", "北"],
+                "销售额": [100.0, 200.0, 300.0, 400.0],
+                "数量": [1, 2, 3, 4],
+                "备注": [None, None, None, None],
+            }
+        )
+        table = SyntheticTable(
+            table_id="t-empty2", domain="sales_orders", sheet="表", frame=frame
+        )
+
+        chains = TemplateChainProposer().propose(table, 500, max_steps=4)
+        blob = json.dumps(chains, ensure_ascii=False)
+
+        self.assertNotIn('"备注"', blob)
+
+    def test_single_step_chart_skips_high_duplication_grouping(self):
+        """明细表按类别直接绘图没有意义，应交给 aggregate→chart 覆盖。"""
+        import pandas as pd
+
+        from dataset_builder.tables import SyntheticTable
+
+        frame = pd.DataFrame(
+            {
+                "销售员": ["甲", "乙", "丙", "丁"] * 25,
+                "销售额": [100.0 + i for i in range(100)],
+            }
+        )
+        table = SyntheticTable(
+            table_id="t-dup", domain="sales_orders", sheet="表", frame=frame
+        )
+
+        chains = TemplateChainProposer().propose(table, 500, max_steps=4)
+        single_with_x = [
+            chain for chain in chains
+            if len(chain) == 1
+            and chain[0]["tool"] == "create_chart"
+            and chain[0]["args"].get("chart_x") == "销售员"
+        ]
+        aggregated_chart = [
+            chain for chain in chains
+            if [step["tool"] for step in chain] == ["aggregate_data", "create_chart"]
+            and chain[-1]["args"].get("chart_x") == "销售员"
+        ]
+
+        self.assertEqual(single_with_x, [])
+        self.assertTrue(aggregated_chart)
+
+    def test_single_step_chart_allowed_when_rows_match_categories(self):
+        """行数与类别数接近时（每行就是一个类别），单步绘图是合理的。"""
+        import pandas as pd
+
+        from dataset_builder.tables import SyntheticTable
+
+        frame = pd.DataFrame(
+            {
+                "区域": ["东", "西", "南", "北"],
+                "销售额": [100.0, 200.0, 300.0, 400.0],
+            }
+        )
+        table = SyntheticTable(
+            table_id="t-small", domain="sales_orders", sheet="表", frame=frame
+        )
+
+        chains = TemplateChainProposer().propose(table, 500, max_steps=4)
+        single_with_x = [
+            chain for chain in chains
+            if len(chain) == 1
+            and chain[0]["tool"] == "create_chart"
+            and chain[0]["args"].get("chart_x") == "区域"
+        ]
+
+        self.assertTrue(single_with_x)
+
+    def test_single_step_chart_excludes_identifier_columns(self):
+        """订单号这类每行都不同的标识符不适合做分类轴。"""
+        import pandas as pd
+
+        from dataset_builder.tables import SyntheticTable
+
+        rows = 40
+        frame = pd.DataFrame(
+            {
+                "订单号": [f"SO{1000 + i}" for i in range(rows)],
+                "区域": ["东", "西"] * (rows // 2),
+                "销售额": [100.0 + i for i in range(rows)],
+            }
+        )
+        table = SyntheticTable(
+            table_id="t-ids", domain="sales_orders", sheet="表", frame=frame
+        )
+
+        chains = TemplateChainProposer().propose(table, 500, max_steps=4)
+        id_axis = [
+            chain for chain in chains
+            if len(chain) == 1
+            and chain[0]["tool"] == "create_chart"
+            and chain[0]["args"].get("chart_x") == "订单号"
+        ]
+
+        self.assertEqual(id_axis, [])
 
     def test_max_steps_limits_chain_length(self):
         table = generate_tables(1, seed=4, domains=["sales_orders"])[0]

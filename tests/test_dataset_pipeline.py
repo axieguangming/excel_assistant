@@ -133,12 +133,21 @@ class PipelineTests(unittest.TestCase):
             artifact = root / sample["expected_result"]["artifact"]
             self.assertTrue(artifact.is_file())
 
-            # 样本记录的行数与 Excel 文件实际行数一致。
+            # 每一步的行数都不能超过 Excel 里读到的原始行数（筛选/汇总只会减少），
+            # 且最后一步的行数要与落盘的结果文件一致。
             table = next(t for t in restored if t.table_id == sample["workbook_id"])
+            source_rows = int(len(table.frame))
+            for step in sample["step_results"]:
+                self.assertLessEqual(step["rows"], max(source_rows, 1))
+
             self.assertEqual(
-                sample["step_results"][0]["rows"],
-                int(len(table.frame)),
+                sample["step_results"][-1]["rows"],
+                sample["expected_result"]["row_count"],
             )
+            written_rows = len(
+                artifact.read_text(encoding="utf-8-sig").splitlines()
+            ) - 1
+            self.assertEqual(written_rows, sample["expected_result"]["row_count"])
 
     def test_build_result_is_written_as_jsonl(self):
         with tempfile.TemporaryDirectory() as directory:

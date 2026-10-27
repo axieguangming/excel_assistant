@@ -246,11 +246,20 @@ class TemplateQuestionWriter:
         return question.replace("，。", "。")
 
 
+def _is_populated(table: SyntheticTable, column: str) -> bool:
+    """全空列（notna 为 0）不应参与任务生成。
+
+    这类列在 pandas 里常被推断成 float64，从而混进"数值列"里；用它做加减或汇总
+    只会得到整列空值，是退化任务，用户也不会提出这种需求。
+    """
+    return bool(table.frame[column].notna().any())
+
+
 def _numeric_columns(table: SyntheticTable) -> list[str]:
     return [
         str(name)
         for name in table.frame.columns
-        if column_kind(table.frame[name]) == "numeric"
+        if column_kind(table.frame[name]) == "numeric" and _is_populated(table, name)
     ]
 
 
@@ -258,7 +267,7 @@ def _columns_by_kind(table: SyntheticTable, kind: str) -> list[str]:
     return [
         str(name)
         for name in table.frame.columns
-        if column_kind(table.frame[name]) == kind
+        if column_kind(table.frame[name]) == kind and _is_populated(table, name)
     ]
 
 
@@ -279,12 +288,22 @@ def _distinct_values(table: SyntheticTable, column: str, limit: int = 3) -> list
 
 
 def _numeric_thresholds(table: SyntheticTable, column: str) -> list[float]:
-    """按分位数取几个阈值，避免所有表都用同一个 0。"""
     values = pd.to_numeric(table.frame[column], errors="coerce").dropna()
     if values.empty:
         return []
     quantiles = [0.25, 0.5, 0.75]
     return sorted({round(float(values.quantile(q)), 2) for q in quantiles})
+
+
+def _numeric_pairs(columns: list[str], limit: int = 2) -> list[tuple[str, str]]:
+    """取前几对不同的数值列组合，避免组合数爆炸。"""
+    pairs: list[tuple[str, str]] = []
+    for index, left in enumerate(columns):
+        for right in columns[index + 1 :]:
+            pairs.append((left, right))
+            if len(pairs) >= limit:
+                return pairs
+    return pairs
 
 
 def _candidates(table: SyntheticTable, *, max_steps: int) -> list[list[dict[str, Any]]]:
@@ -294,7 +313,7 @@ def _candidates(table: SyntheticTable, *, max_steps: int) -> list[list[dict[str,
     这里按"列 × 操作符 × 参数 × 步数"组合展开，让规则生成也能有足够多样性。
     """
     numeric = _numeric_columns(table)
-    text = [column for column in _columns_by_kind(table, "text") if column != "备注"]
+    text = _columns_by_kind(table, "text")
     datetimes = _columns_by_kind(table, "datetime")
 
     chains: list[list[dict[str, Any]]] = []
@@ -421,11 +440,25 @@ def _candidates(table: SyntheticTable, *, max_steps: int) -> list[list[dict[str,
             }}])
 
     # ---- 单步：图表 ----
+    # 单步绘图只在"行粒度本身就是合适的横轴"时成立：表行数不多，或类别数接近行数。
+    # 若一行代表一条明细、类别却只有几个，直接按行画图会产生大量重复堆叠，
+    # 正确做法是先汇总（见下面的多步组合）。
+    row_count = len(table.frame)
+
     for column in numeric:
         for chart_type in ("bar", "line", "pie"):
             add([{"tool": "create_chart", "args": {
                 "chart_type": chart_type, "chart_y": column}}])
     for group in text:
+        distinct = int(table.frame[group].nunique())
+        if distinct == 0:
+            continue
+        # 一行一条明细、类别却只有几个：直接绘图会把大量重复堆叠在一起，应先汇总。
+        if row_count > max(distinct * 3, 12):
+            continue
+        # 每行都不同的列是订单号/编号这类标识符，不适合做分类轴。
+        if distinct == row_count and row_count > 12:
+            continue
         for column in numeric:
             for chart_type in ("bar", "line", "pie"):
                 add([{"tool": "create_chart", "args": {
@@ -449,14 +482,35 @@ def _candidates(table: SyntheticTable, *, max_steps: int) -> list[list[dict[str,
                     {"tool": "sort_rows", "args": {
                         "sort_by": [{"column": metric_name, "ascending": False}]}},
                 ])
+
+                # 先按类别汇总，再用汇总结果绘图：原始行粒度与图表语义不匹配时，
+                # 这是唯一合理的做法，也是最常见的真实需求。
+                for chart_type in ("bar", "line", "pie"):
+                    add([
+                        {"tool": "aggregate_data", "args": {
+                            "group_by": [group],
+                            "metrics": [{"column": column, "function": function,
+                                         "name": metric_name}]}},
+                        {"tool": "create_chart", "args": {
+                            "chart_type": chart_type,
+                            "chart_x": group,
+                            "chart_y": metric_name}},
+                    ])
+
+                # 汇总 → 排序 → 绘图：柱状图按数值排列，是报表里的常见形态。
                 add([
                     {"tool": "aggregate_data", "args": {
                         "group_by": [group],
                         "metrics": [{"column": column, "function": function,
                                      "name": metric_name}]}},
+                    {"tool": "sort_rows", "args": {
+                        "sort_by": [{"column": metric_name, "ascending": False}]}},
                     {"tool": "create_chart", "args": {
-                        "chart_type": "bar", "chart_x": group, "chart_y": metric_name}},
+                        "chart_type": "bar",
+                        "chart_x": group,
+                        "chart_y": metric_name}},
                 ])
+
                 add([
                     {"tool": "aggregate_data", "args": {
                         "group_by": [group],
@@ -467,6 +521,42 @@ def _candidates(table: SyntheticTable, *, max_steps: int) -> list[list[dict[str,
                         "limit": 5}},
                 ])
 
+    # 汇总两个指标后再绘图：横轴分组、纵轴其一，另一个留作对照。
+    for group in text:
+        for left, right in _numeric_pairs(numeric):
+            for function in ("sum", "mean"):
+                left_name = f"{left}_{function}"
+                right_name = f"{right}_{function}"
+                add([
+                    {"tool": "aggregate_data", "args": {
+                        "group_by": [group],
+                        "metrics": [
+                            {"column": left, "function": function, "name": left_name},
+                            {"column": right, "function": function, "name": right_name},
+                        ]}},
+                    {"tool": "create_chart", "args": {
+                        "chart_type": "bar",
+                        "chart_x": group,
+                        "chart_y": left_name}},
+                ])
+
+    # 筛选后汇总再绘图：先限定范围再展示，是分析类需求的典型链条。
+    if text and numeric:
+        for value in _distinct_values(table, text[0], limit=2):
+            for chart_type in ("bar", "line"):
+                add([
+                    {"tool": "filter_rows", "args": {"filters": [
+                        {"column": text[0], "operator": "eq", "value": value}]}},
+                    {"tool": "aggregate_data", "args": {
+                        "group_by": [text[0]],
+                        "metrics": [{"column": numeric[0], "function": "sum",
+                                     "name": f"{numeric[0]}_sum"}]}},
+                    {"tool": "create_chart", "args": {
+                        "chart_type": chart_type,
+                        "chart_x": text[0],
+                        "chart_y": f"{numeric[0]}_sum"}},
+                ])
+
     for column in numeric:
         add([
             {"tool": "filter_rows", "args": {"filters": [
@@ -474,12 +564,8 @@ def _candidates(table: SyntheticTable, *, max_steps: int) -> list[list[dict[str,
             {"tool": "top_n_rows", "args": {
                 "sort_by": [{"column": column, "ascending": False}], "limit": 10}},
         ])
-        add([
-            {"tool": "sort_rows", "args": {"sort_by": [
-                {"column": column, "ascending": False}]}},
-            {"tool": "top_n_rows", "args": {
-                "sort_by": [{"column": column, "ascending": False}], "limit": 5}},
-        ])
+        # 注意：不要再生成 sort_rows → top_n_rows。top_n_rows 内部已按同样字段排序，
+        # 前一步的排序对结果没有任何影响，属于冗余标签，会让"序列一致"失去意义。
 
     for left in numeric:
         for right in numeric:
