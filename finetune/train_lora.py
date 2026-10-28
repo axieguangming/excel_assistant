@@ -23,16 +23,28 @@ import json
 from pathlib import Path
 from typing import Any
 
-import torch
-from torch.utils.data import Dataset
-from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    Trainer,
-    TrainingArguments,
-)
 
-from peft import LoraConfig, TaskType, get_peft_model
+def _require_training_dependencies() -> None:
+    """把重依赖的导入放到运行时，这样 --help 与参数校验无需 GPU 环境。"""
+    missing = []
+    for name in ("torch", "transformers", "peft"):
+        try:
+            __import__(name)
+        except ImportError:
+            missing.append(name)
+    if missing:
+        raise SystemExit(
+            "缺少训练依赖：" + ", ".join(missing) + "\n"
+            "请先安装：python -m pip install -r requirements-train.txt"
+        )
+
+
+try:
+    # 未安装训练依赖时仍允许 --help 与参数校验，
+    # 只有真正训练才会因为缺少 Trainer 而报错。
+    from torch.utils.data import Dataset  # type: ignore[assignment]
+except ImportError:  # pragma: no cover - 仅用于无依赖环境
+    Dataset = object  # type: ignore[assignment, misc]
 
 
 class TrajectoryCollator:
@@ -115,7 +127,9 @@ class TrajectoryDataset(Dataset):
         }
 
 
-def build_lora_config() -> LoraConfig:
+def build_lora_config():
+    from peft import LoraConfig, TaskType
+
     return LoraConfig(
         task_type=TaskType.CAUSAL_LM,
         r=16,
@@ -130,10 +144,55 @@ def build_lora_config() -> LoraConfig:
     )
 
 
+def resolve_model_source(value: str) -> tuple[str, str | None]:
+    """校验并解析 --model，返回 (可加载的路径或仓库名, 警告信息)。
+
+    GGUF 是 llama.cpp 的量化推理格式，transformers/peft 无法加载；直接报错
+    比让用户看着一次隐式下载更清楚。
+    """
+    path = Path(value)
+
+    if path.suffix.lower() == ".gguf" or (
+        path.is_file() and path.name.lower().endswith(".gguf")
+    ):
+        raise SystemExit(
+            f"{value} 是 GGUF 量化文件，不能用于微调。\n"
+            "训练需要原始 safetensors 权重，请下载 Qwen2.5-1.5B-Instruct 的\n"
+            "HuggingFace / ModelScope 仓库（约 3.1 GB），再通过 --model 指向该目录。\n"
+            "GGUF 只用于 llama.cpp 推理，微调完成后再导出 GGUF 部署。"
+        )
+
+    if not path.exists():
+        warning = (
+            f"本地没有 {value}，将从 HuggingFace 下载约 3.1 GB 权重。\n"
+            "国内网络较慢时可改用镜像：\n"
+            "    set HF_ENDPOINT=https://hf-mirror.com\n"
+            "或先用 modelscope 下载，再 --model 指向本地目录。\n"
+        )
+        return value, warning
+
+    if not path.is_dir():
+        raise SystemExit(f"--model 需要是模型目录或仓库名，收到文件：{value}")
+
+    has_weights = any(
+        path.glob("*.safetensors")
+    ) or any(path.glob("*.bin"))
+    if not has_weights:
+        raise SystemExit(
+            f"{value} 里没有 *.safetensors 或 *.bin 权重文件。\n"
+            "该目录可能只放了 GGUF，或下载不完整。"
+        )
+    return str(path), None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="LoRA SFT for the Excel agent")
     parser.add_argument("--data", default="build/sft", help="包含 train.jsonl / val.jsonl 的目录")
-    parser.add_argument("--model", default="Qwen/Qwen2.5-1.5B-Instruct")
+    parser.add_argument(
+        "--model",
+        default="Qwen/Qwen2.5-1.5B-Instruct",
+        help="HuggingFace 仓库名，或本地 safetensors 模型目录（不能是 .gguf）",
+    )
     parser.add_argument("--output", default="build/lora-out")
     parser.add_argument("--epochs", type=float, default=3.0)
     parser.add_argument("--batch-size", type=int, default=1)
@@ -155,7 +214,23 @@ def main() -> int:
         print(f"找不到 {train_path}，请先运行 finetune/convert.py")
         return 2
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
+    model_source, warning = resolve_model_source(args.model)
+    if warning:
+        print(warning)
+        print(f"实际加载来源：{model_source}\n")
+
+    _require_training_dependencies()
+    import torch
+    from transformers import (
+        AutoModelForCausalLM,
+        AutoTokenizer,
+        Trainer,
+        TrainingArguments,
+    )
+
+    from peft import get_peft_model
+
+    tokenizer = AutoTokenizer.from_pretrained(model_source, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -169,7 +244,7 @@ def main() -> int:
             bnb_4bit_compute_dtype=torch.bfloat16,
             bnb_4bit_use_double_quant=True,
         )
-    model = AutoModelForCausalLM.from_pretrained(args.model, **model_kwargs)
+    model = AutoModelForCausalLM.from_pretrained(model_source, **model_kwargs)
     model = get_peft_model(model, build_lora_config())
     model.print_trainable_parameters()
 

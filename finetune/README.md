@@ -10,9 +10,47 @@
 python -m pip install -r requirements-train.txt
 ```
 
-需要 CUDA 环境。1.5B 在纯 CPU 上训练不现实（推理都要 24 tok/s）。
+**需要 CUDA 版 torch。** 检查：
 
-## 2. 转换数据
+```powershell
+python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+```
+
+若输出 `2.x.x+cpu` 或 `False`，说明装的是 CPU 版，1.5B 训练不可行
+（本机就是这种情况：`2.14.1+cpu`，无 CUDA）。需要先装 CUDA 版：
+
+```powershell
+python -m pip uninstall -y torch
+python -m pip install torch --index-url https://download.pytorch.org/whl/cu124
+```
+
+## 2. 准备可训练的模型权重
+
+**GGUF 不能用于微调。** 这是最容易踩的坑：
+
+| 格式 | 用途 | 能否训练 |
+| --- | --- | --- |
+| `*.gguf`（如 q4_k_m） | llama.cpp 推理，已量化到 4bit | ❌ |
+| `*.safetensors` / `*.bin` | 原始 fp16/bf16 权重 | ✅ |
+
+`models/qwen2.5-1.5b-instruct-q4_k_m.gguf` 只供 llama.cpp 推理。训练脚本现在会直接
+拒绝 GGUF 路径并说明原因，而不是静默去 HuggingFace 下载 3.1 GB。
+
+需要另外准备原始权重，二选一：
+
+```powershell
+# 方式 A：让脚本自动下载（约 3.1 GB）
+# 国内可先设镜像：set HF_ENDPOINT=https://hf-mirror.com
+
+# 方式 B：先下载再指向本地目录（推荐，可控且可复用）
+python -c "from modelscope import snapshot_download; snapshot_download('Qwen/Qwen2.5-1.5B-Instruct', cache_dir='models')"
+
+python finetune/train_lora.py --data build/sft --model models/Qwen/Qwen2.5-1.5B-Instruct
+```
+
+脚本会校验 `--model` 指向的目录是否真的含 `*.safetensors` 或 `*.bin`。
+
+## 3. 转换数据
 
 ```powershell
 python finetune/convert.py --data datasets --out build/sft
@@ -40,10 +78,10 @@ build/sft/
 - 每步执行前会复制 DataFrame。`_computed_column` 与 `_fill_missing_values` 是原地修改的，
   不复制会污染同一工作簿的其他样本（这个 bug 在开发时真实触发过）。
 
-## 3. 训练
+## 4. 训练
 
 ```powershell
-python finetune/train_lora.py --data build/sft --output build/lora-out
+python finetune/train_lora.py --data build/sft --model <权重目录> --output build/lora-out
 ```
 
 默认配置：
@@ -64,7 +102,7 @@ python finetune/train_lora.py --data build/sft --output build/lora-out
 python finetune/train_lora.py --data build/sft --max-steps 10
 ```
 
-## 4. 评测
+## 5. 评测
 
 训练完导出合并后的模型或直接用 LoRA 起一个 OpenAI 兼容服务，然后用现成 CLI 评测：
 
@@ -91,3 +129,5 @@ python -m dataset_builder.cli eval --data datasets --split val --base-url http:/
 2. **类别不均衡**。`dedupe`、`describe` 各只有 37 条训练样本，微调后这两类可能退化，
    值得在评测里单独看。
 3. **样本量偏小**。888 条训练样本足够验证流程与方向，但要达到产品级还需要数千条。
+4. **本机无法训练**。当前 torch 是 CPU 版（`2.14.1+cpu`），没有 CUDA。1.5B 在 CPU 上
+   训练不现实，需要先装 CUDA 版 torch 或换到有显卡的机器。

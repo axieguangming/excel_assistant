@@ -75,11 +75,11 @@ python -m dataset_builder.cli resplit --data datasets --seed 20251023
 ```powershell
 python -m pip install -r requirements-train.txt
 python finetune/convert.py --data datasets --out build/sft
-python finetune/train_lora.py --data build/sft --output build/lora-out
+python finetune/train_lora.py --data build/sft --model <safetensors 权重目录> --output build/lora-out
 ```
 
 轨迹里的中间观察结果是真实执行的，system prompt 与工具 schema 直接复用线上代码。
-详见 [finetune/README.md](./finetune/README.md)。
+注意：**GGUF 不能用于微调**，训练需要原始 safetensors 权重。详见 [finetune/README.md](./finetune/README.md)。
 
 ## 文档
 
