@@ -15,6 +15,7 @@ class AgentState(TypedDict):
     tool_steps: int               # 已执行的工具数
     turns: int                    # 模型决策轮数
     result_df: Any                # 处理后的结果 DataFrame
+    last_result_rows: int | None  # 最近一次工具产出的行数（只读工具不覆盖 current_df）
     final_answer: str             # 最终文字结论
     chart_file: str               # 生成的图表文件 URL
     code: str                     # 兼容旧 API 的工具调用记录

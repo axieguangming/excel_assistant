@@ -47,6 +47,12 @@ except ImportError:  # pragma: no cover - 仅用于无依赖环境
     Dataset = object  # type: ignore[assignment, misc]
 
 
+# 序列长度上限。必须覆盖数据里最长样本，否则尾部（最终答复）会被静默截断，
+# 模型只学到工具调用、学不到汇报。当前数据（4931 条）最长 5217 token。
+# 用 2048 会截掉全部 assistant 标签；4608 仍有 5.3% 样本被截断。
+DEFAULT_MAX_LENGTH = 5376
+
+
 class TrajectoryCollator:
     """按 batch 内最长序列右填充。
 
@@ -96,25 +102,53 @@ class TrajectoryDataset(Dataset):
     def __len__(self) -> int:
         return len(self.records)
 
+    def _encode(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+    ) -> tuple[list[int], list[int]]:
+        """按消息边界增量编码，标出 assistant 片段。
+
+        Qwen2.5 的 chat template 不含 ``{% generation %}`` 标记，transformers 的
+        ``return_assistant_tokens_mask`` 会返回 None。若此时退化为"整段都算损失"，
+        模型会去学习复述工作表概况和工具输出——这是微调最常见的失败方式。
+
+        这里逐个前缀重新编码求出每个 assistant 片段对应的 token 区间。
+        模板用显式分隔符（``<|im_start|>role``），因此前缀编码是稳定的。
+        """
+        input_ids: list[int] = []
+        assistant_mask: list[int] = []
+        for index, message in enumerate(messages):
+            encoded = self.tokenizer.apply_chat_template(
+                messages[: index + 1],
+                tools=tools,
+                tokenize=True,
+                add_generation_prompt=False,
+            )
+            ids = list(encoded["input_ids"])
+            added = len(ids) - len(input_ids)
+            if added < 0:
+                raise ValueError("chat template 不满足前缀单调性，无法计算损失掩码。")
+            keep = 1 if message.get("role") == "assistant" else 0
+            assistant_mask.extend([keep] * added)
+            input_ids = ids
+        return input_ids, assistant_mask
+
     def __getitem__(self, index: int) -> dict[str, list[int]]:
         record = self.records[index]
-        encoded = self.tokenizer.apply_chat_template(
-            record["messages"],
-            tools=record["tools"],
-            tokenize=True,
-            add_generation_prompt=False,
-            return_assistant_tokens_mask=True,
-            truncation=True,
-            max_length=self.max_length,
+        input_ids, assistant_mask = self._encode(
+            record["messages"], record["tools"]
         )
-        input_ids = list(encoded["input_ids"])
-        # assistant_tokens_mask 为 1 的位置才参与损失。
-        assistant_mask = list(encoded.get("assistant_tokens_mask") or [])
 
-        if len(assistant_mask) != len(input_ids):
-            # 少数模板不支持 generation 标记时退化为"整段都算"，
-            # 但会打印告警，避免悄悄训练出复述问题的模型。
-            assistant_mask = [1] * len(input_ids)
+        if len(input_ids) > self.max_length:
+            input_ids = input_ids[: self.max_length]
+            assistant_mask = assistant_mask[: self.max_length]
+
+        if not any(assistant_mask):
+            raise ValueError(
+                f"样本 {record.get('sample_id')} 截断后不含任何 assistant token，"
+                "请调大 --max-length。"
+            )
 
         labels = [
             token if keep else -100
@@ -125,6 +159,43 @@ class TrajectoryDataset(Dataset):
             "attention_mask": [1] * len(input_ids),
             "labels": labels,
         }
+
+
+def build_selective_loss_trainer():
+    """构造只在监督位置计算 logits 的 Trainer。
+
+    因果 LM 默认会对整段序列做 ``lm_head`` 投影。词表 151936、序列约 3900 token
+    时，仅 logits 一项就占 3941 × 151936 × 4 ≈ 2.4 GB，反向传播还要一份。
+    在 6 GB 显卡上这会溢出到共享内存，训练速度掉到原来的几分之一。
+
+    本项目的监督 token 只占约 5%（1~3 段 assistant 片段），因此用
+    ``logits_to_keep`` 布尔掩码只投影这些位置，显存占用降低一个数量级。
+    """
+
+    from transformers import Trainer
+
+    class SelectiveLogitsTrainer(Trainer):
+        def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+            import torch
+            import torch.nn.functional as F
+
+            labels = inputs.pop("labels")
+            # 位置 i 的 logits 预测第 i+1 个 token，所以取标签位置的前一位。
+            supervised = labels != -100
+            keep = torch.zeros_like(supervised)
+            keep[:, :-1] = supervised[:, 1:]
+            targets = labels[:, 1:][supervised[:, 1:]]
+
+            outputs = model(**inputs, logits_to_keep=keep)
+            logits = outputs.logits
+            if logits.shape[0] != targets.shape[0]:
+                raise RuntimeError(
+                    f"logits 与标签数量不一致：{logits.shape[0]} vs {targets.shape[0]}"
+                )
+            loss = F.cross_entropy(logits.float(), targets)
+            return (loss, outputs) if return_outputs else loss
+
+    return SelectiveLogitsTrainer
 
 
 def build_lora_config():
@@ -198,8 +269,32 @@ def main() -> int:
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--grad-accum", type=int, default=8)
     parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--max-length", type=int, default=4096)
+    parser.add_argument("--max-length", type=int, default=DEFAULT_MAX_LENGTH)
     parser.add_argument("--max-steps", type=int, default=-1, help="用于冒烟测试")
+    parser.add_argument(
+        "--warmup-ratio",
+        type=float,
+        default=0.03,
+        help="学习率预热占总步数的比例；transformers 5.x 只接受具体步数，这里换算",
+    )
+    parser.add_argument(
+        "--warmup-steps",
+        type=int,
+        default=-1,
+        help="直接指定预热步数，优先于 --warmup-ratio",
+    )
+    parser.add_argument(
+        "--save-every",
+        type=int,
+        default=4,
+        help="每个 epoch 内保存多少次检查点；0 表示只在 epoch 结束保存",
+    )
+    parser.add_argument(
+        "--save-limit",
+        type=int,
+        default=2,
+        help="最多保留多少个检查点",
+    )
     parser.add_argument(
         "--no-4bit",
         action="store_true",
@@ -259,6 +354,35 @@ def main() -> int:
 
     collator = TrajectoryCollator(pad_token_id=tokenizer.pad_token_id)
 
+    # transformers 5.x 移除了 warmup_ratio，需要自己换算成步数。
+    if args.warmup_steps >= 0:
+        warmup_steps = args.warmup_steps
+    else:
+        if args.max_steps and args.max_steps > 0:
+            total_steps = args.max_steps
+        else:
+            steps_per_epoch = max(
+                1,
+                len(train_dataset)
+                // max(1, args.batch_size * args.grad_accum),
+            )
+            total_steps = max(1, int(steps_per_epoch * args.epochs))
+        warmup_steps = max(0, int(total_steps * args.warmup_ratio))
+    print(f"预热步数：{warmup_steps}（比例 {args.warmup_ratio}）")
+
+    total_steps = (
+        args.max_steps
+        if args.max_steps and args.max_steps > 0
+        else max(
+            1,
+            (len(train_dataset) // max(1, args.batch_size * args.grad_accum))
+            * int(args.epochs),
+        )
+    )
+    # 单 epoch 训练动辄数小时，按 epoch 保存意味着中断后一无所有。
+    # 改成按步保存并保留最近若干个检查点，便于中断后续训或取用中间结果。
+    save_steps = max(1, total_steps // max(1, args.save_every)) if args.save_every else 0
+
     training_args = TrainingArguments(
         output_dir=args.output,
         num_train_epochs=args.epochs,
@@ -267,17 +391,21 @@ def main() -> int:
         gradient_accumulation_steps=args.grad_accum,
         learning_rate=args.lr,
         lr_scheduler_type="cosine",
-        warmup_ratio=0.03,
+        warmup_steps=warmup_steps,
         logging_steps=5,
-        save_strategy="epoch",
+        save_strategy="steps" if save_steps else "epoch",
+        save_steps=save_steps or 500,
+        save_total_limit=args.save_limit,
         eval_strategy="epoch" if eval_dataset is not None else "no",
         bf16=torch.cuda.is_available(),
         gradient_checkpointing=True,
         report_to=[],
         max_steps=args.max_steps,
     )
+    if save_steps:
+        print(f"每 {save_steps} 步保存一次（共 {total_steps} 步，保留 {args.save_limit} 个）")
 
-    trainer = Trainer(
+    trainer = build_selective_loss_trainer()(
         model=model,
         args=training_args,
         train_dataset=train_dataset,

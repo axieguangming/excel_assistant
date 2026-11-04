@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -61,9 +62,38 @@ def build_human_message(df: pd.DataFrame, question: str, history: list | None = 
     )
 
 
-def render_observation(df: pd.DataFrame) -> str:
-    """工具返回给模型的文本，与 excel_ops 里的实现一致。"""
-    return excel_ops._frame_observation(df)
+def render_observation(
+    df: pd.DataFrame,
+    *,
+    tool_name: str = "",
+    arguments: dict[str, Any] | None = None,
+    chart_url: str | None = None,
+) -> str:
+    """工具返回给模型的文本，与 excel_ops 的实现一致。
+
+    必须按工具区分：`create_chart` 线上返回的是图表地址与设置，而不是结果行
+    预览；`describe_data` 是只读工具，措辞不同。若统一用数据框预览，模型就
+    学不到「画图这一步是否成功」，实测会导致大量漏调 `create_chart`。
+    """
+    return excel_ops.observation_for_step(
+        tool_name,
+        df,
+        arguments=arguments,
+        chart_url=chart_url,
+    )
+
+
+def _chart_placeholder_url(seed: str) -> str:
+    """与 `excel_ops._create_chart` 返回的地址同格式。
+
+    训练数据构造不真的渲染 PNG（1168 次渲染徒增耗时），但图表的合法性已由
+    `_apply_step` 里的校验覆盖，因此只复现地址格式，保证训练/推理文本一致。
+
+    用确定性哈希而不是 `uuid4`：否则同一份输入每次生成的数据都不同，既无法
+    对比两次构建的差异，也让「同输入同输出」无法成立。
+    """
+    digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()
+    return f"/api/chart/chart_{digest[:12]}.png"
 
 
 def sample_to_messages(
@@ -88,14 +118,34 @@ def sample_to_messages(
     current = table_frame
     for index, step in enumerate(sample["expected_actions"], start=1):
         call_id = f"call_{index}"
+        tool_name = str(step["tool"])
+        arguments = dict(step.get("args") or {})
+        previous = current
         # 与 _execute_dataframe_tool 一致：先复制再执行。
         # _computed_column / _fill_missing_values 会原地修改传入的 DataFrame，
         # 不复制会污染其他样本共用的表格。
-        current, _ = _apply_step(
-            current.copy(),
+        step_frame, step_chart = _apply_step(
+            previous.copy(),
             step,
             render_charts=False,
             chart_dir=None,
+        )
+
+        if tool_name == "describe_data":
+            # 真实工具是只读的：产出统计摘要供查看，但后续步骤仍在原数据上继续
+            # （见 excel_ops.describe_data 的 read_only=True）。
+            # executor 却把它当成换表操作，这里必须对齐真实语义，否则「先看一眼
+            # 再继续」的链会让后续步骤找不到字段。
+            observation_frame = step_frame
+            current = previous
+        else:
+            observation_frame = step_frame
+            current = step_frame
+
+        chart_url = (
+            _chart_placeholder_url(f"{sample.get('sample_id', '')}-{index}")
+            if step_chart is not None or tool_name == "create_chart"
+            else None
         )
         messages.append(
             {
@@ -106,9 +156,9 @@ def sample_to_messages(
                         "id": call_id,
                         "type": "function",
                         "function": {
-                            "name": step["tool"],
+                            "name": tool_name,
                             "arguments": json.dumps(
-                                step.get("args", {}), ensure_ascii=False
+                                arguments, ensure_ascii=False
                             ),
                         },
                     }
@@ -119,8 +169,13 @@ def sample_to_messages(
             {
                 "role": "tool",
                 "tool_call_id": call_id,
-                "name": step["tool"],
-                "content": render_observation(current),
+                "name": tool_name,
+                "content": render_observation(
+                    observation_frame,
+                    tool_name=tool_name,
+                    arguments=arguments,
+                    chart_url=chart_url,
+                ),
             }
         )
 

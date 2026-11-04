@@ -79,6 +79,23 @@ class CompareFramesTests(unittest.TestCase):
         matched, _ = compare_frames(expected, actual)
         self.assertTrue(matched)
 
+    def test_large_number_with_ulp_difference_is_tolerated(self):
+        # 汇总大额金额时 float64 的 ULP 约 3.8e-6；固定 6 位小数的旧实现会
+        # 把 27103570497.56 与 27103570497.559998 判成不同值。
+        expected = pd.DataFrame({"v": [27103570497.560001]})
+        actual = pd.DataFrame({"v": [27103570497.559998]})
+
+        matched, reason = compare_frames(expected, actual)
+        self.assertTrue(matched, reason)
+
+    def test_genuinely_different_large_numbers_are_reported(self):
+        expected = pd.DataFrame({"v": [27103570497.56]})
+        actual = pd.DataFrame({"v": [27103570498.56]})
+
+        matched, reason = compare_frames(expected, actual)
+        self.assertFalse(matched)
+        self.assertEqual(reason, "数据内容不同")
+
     def test_row_order_difference_is_reported_separately(self):
         expected = pd.DataFrame({"a": [1, 2]})
         actual = pd.DataFrame({"a": [2, 1]})

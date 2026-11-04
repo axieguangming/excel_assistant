@@ -130,5 +130,48 @@ class LazyImportTests(unittest.TestCase):
         self.assertEqual(batch["attention_mask"].tolist()[1], [1, 0, 0])
 
 
+class MaxLengthDefaultTests(unittest.TestCase):
+    """默认 max_length 必须覆盖当前数据，否则尾部（最终答复）会被静默截断。
+
+    历史教训：用 2048 时把所有 assistant 标签都截掉了；用 4608 仍有 5.3% 样本
+    被截断，被截断的样本只学工具调用、不学汇报。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_train_module()
+
+    def test_default_is_large_enough_for_current_data(self):
+        # 当前数据实测最长 5217 token；留出余量防止后续数据变长。
+        self.assertGreaterEqual(self.module.DEFAULT_MAX_LENGTH, 5217)
+
+    def test_dataset_truncation_only_affects_tail(self):
+        """超长时只截尾部，且截断后仍保留 assistant token 供训练。"""
+        module = self.module
+
+        class FakeTokenizer:
+            def apply_chat_template(self, messages, **kwargs):
+                return {"input_ids": list(range(len(messages) * 10))}
+
+        dataset = module.TrajectoryDataset.__new__(module.TrajectoryDataset)
+        dataset.tokenizer = FakeTokenizer()
+        dataset.max_length = 15
+        dataset.records = [
+            {
+                "sample_id": "x",
+                "tools": [],
+                "messages": [
+                    {"role": "user", "content": "u"},
+                    {"role": "assistant", "content": "a"},
+                ],
+            }
+        ]
+        item = dataset[0]
+        self.assertEqual(len(item["input_ids"]), 15)
+        # 前缀编码：user 10 个 token 不监督，assistant 前 5 个 token 参与损失。
+        self.assertEqual(item["labels"][:10], [-100] * 10)
+        self.assertNotEqual(item["labels"][10:15], [-100] * 5)
+
+
 if __name__ == "__main__":
     unittest.main()

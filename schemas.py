@@ -27,6 +27,15 @@ class FilterCondition(BaseModel):
 
 
 class Metric(BaseModel):
+    """单个统计指标。
+
+    ``count`` 的语义是**该组有多少行记录**，与 ``column`` 是否含空值无关
+    （等价于按组计数，不是 ``Series.count``）。如需统计某列的非空值个数，
+    请先用 ``filter_rows`` 过滤空值。
+
+    ``nunique`` 统计 ``column`` 中不同非空值的个数。
+    """
+
     model_config = ConfigDict(extra="forbid")
 
     column: str

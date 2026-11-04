@@ -15,7 +15,7 @@ Windows 桌面版 Excel 数据助手。用户上传最大 50 MB 的 `.xlsx`、`.
 ```ini
 DEEPSEEK_API_KEY=
 DEEPSEEK_BASE_URL=https://api.deepseek.com
-DEEPSEEK_MODEL=deepseek-v4-flash
+DEEPSEEK_MODEL=deepseek-flash
 ```
 
 然后执行：
@@ -81,9 +81,38 @@ python finetune/train_lora.py --data build/sft --model <safetensors 权重目录
 轨迹里的中间观察结果是真实执行的，system prompt 与工具 schema 直接复用线上代码。
 注意：**GGUF 不能用于微调**，训练需要原始 safetensors 权重。详见 [finetune/README.md](./finetune/README.md)。
 
+当前最佳配置使用 LLM 生成的操作链、5 种口语化问法和歧义澄清样本（约 3900 条），
+在 RTX 3050 上单 epoch 约 5 小时。
+
+在 396 条**独立留出集**上的三方对照（同一 Agent 图与判定口径）：
+
+| 评测集 | 强模型 `deepseek-flash` | 未微调基座 | 微调后 |
+| --- | --- | --- | --- |
+| A：新数据值，沿用训练表结构（247 条） | 85.4% | 1.6% | 79.8% |
+| B：新业务域，列名基本全新（149 条） | 81.2% | 4.0% | 66.4% |
+| 合计（396 条） | 83.8% | **2.5%** | **74.7%** |
+
+未微调基座在 305 条执行类样本上**一次工具都没调用**——微调解决的首要问题是「会不会调用工具」。
+
+已知短板：
+
+- **换新业务域后优势明显收窄**（79.8% → 66.4%），会编造列名
+- **澄清能力弱于强模型**（91 条：74.7% vs 97.8%，B 组差距 45 个点）
+- **多步链容易漏掉末尾步骤**：64 条失败中 `create_chart` 38 次、`sort_rows` 19 次
+- **失败时会声称已完成**：9 条未调用 `create_chart` 却说「柱状图也画好了」
+
+完整报告见 [docs/post-training-report.md](./docs/post-training-report.md)。
+
+数据构造流水线（链生成、问法生成、忠实度校验）位于 [`pipeline/`](./pipeline/README.md)，产物写入 `build/`。
+
 ## 文档
 
+- [**后训练微调实验报告（v2）**](./docs/post-training-report.md) — 数据 → 训练 → 三方对照 → 失败分析
 - [Excel Agent 微调数据集构造方案](./docs/dataset-plan.md)
+- [LoRA 微调实验记录](./docs/finetune-experiments.md)
+- [评测口径](./docs/eval-protocol.md)
+- [后续工作计划](./docs/next-steps.md)
+- [数据构造流水线](./pipeline/README.md)
 - [本地小模型（Qwen2.5-1.5B + llama.cpp）](./docs/local-model.md)
 
 ## 许可

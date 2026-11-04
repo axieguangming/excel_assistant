@@ -19,12 +19,26 @@ DOMAINS: tuple[str, ...] = (
     "survey",
 )
 
+# 仅用于评测的留出业务域：字段命名刻意避开训练集词汇，
+# 用于检验模型对「没见过的表结构」的迁移能力。
+# 不得加入上面的 DOMAINS，否则会混进训练数据，评测即失效。
+HOLDOUT_DOMAINS: tuple[str, ...] = (
+    "logistics",
+    "customers",
+    "inspection",
+)
+
+ALL_DOMAINS: tuple[str, ...] = (*DOMAINS, *HOLDOUT_DOMAINS)
+
 SHEET_NAMES: dict[str, str] = {
     "sales_orders": "订单明细",
     "inventory": "库存",
     "staffing": "排班",
     "budget": "预算执行",
     "survey": "问卷",
+    "logistics": "运单明细",
+    "customers": "客户档案",
+    "inspection": "巡检记录",
 }
 
 SOURCE: dict[str, str] = {"type": "synthetic", "license_id": "synthetic-internal"}
@@ -199,12 +213,110 @@ def _survey(rng: random.Random) -> pd.DataFrame:
     return _finalize(rng, frame, nullable=["满意度", "城市", "反馈"])
 
 
+def _logistics(rng: random.Random) -> pd.DataFrame:
+    """物流运单（留出域）。
+
+    字段刻意不用训练集里的「区域/仓库/数量/单价」，改用「站点/毛重/运费」，
+    以检验模型是否依赖特定词汇而非表结构。
+    """
+    rows = rng.randint(26, 95)
+    start = date(2025, 2, 1)
+    frame = pd.DataFrame(
+        {
+            "运单编号": [f"WL{3000 + index}" for index in range(rows)],
+            "签收日期": [
+                start + timedelta(days=rng.randint(0, 300)) for _ in range(rows)
+            ],
+            "始发站点": [
+                rng.choice(["成都站", "西安站", "武汉站", "沈阳站"])
+                for _ in range(rows)
+            ],
+            "目的站点": [
+                rng.choice(["杭州站", "天津站", "重庆站", "青岛站"])
+                for _ in range(rows)
+            ],
+            "毛重": [round(rng.uniform(0.5, 180), 1) for _ in range(rows)],
+            "运费": [round(rng.uniform(12, 900), 2) for _ in range(rows)],
+            "签收结果": [
+                rng.choice(["已签收", "部分签收", "拒收", "待签收"])
+                for _ in range(rows)
+            ],
+        }
+    )
+    frame["签收日期"] = pd.to_datetime(frame["签收日期"])
+    # 派生指标：让「计算列」类任务有现成的业务含义
+    frame["单位运费"] = (frame["运费"] / frame["毛重"]).round(2)
+    return _finalize(
+        rng, frame, nullable=["毛重", "运费", "签收结果", "单位运费"]
+    )
+
+
+def _customers(rng: random.Random) -> pd.DataFrame:
+    """客户档案（留出域）。行业领域/合作等级取代区域/部门作为分组维度。"""
+    rows = rng.randint(30, 120)
+    start = date(2024, 7, 1)
+    frame = pd.DataFrame(
+        {
+            "客户代码": [f"C{700 + index}" for index in range(rows)],
+            "行业领域": [
+                rng.choice(["制造业", "零售业", "金融业", "医疗", "教育"])
+                for _ in range(rows)
+            ],
+            "合作等级": [
+                rng.choice(["战略客户", "重点客户", "普通客户"])
+                for _ in range(rows)
+            ],
+            "签约金额": [round(rng.uniform(5000, 800000), 2) for _ in range(rows)],
+            "回款金额": [round(rng.uniform(0, 700000), 2) for _ in range(rows)],
+            "签约日": [
+                start + timedelta(days=rng.randint(0, 480)) for _ in range(rows)
+            ],
+        }
+    )
+    frame["签约日"] = pd.to_datetime(frame["签约日"])
+    # 保证分母非零：签约金额最低 5000
+    frame["回款率"] = (frame["回款金额"] / frame["签约金额"] * 100).round(2)
+    return _finalize(
+        rng, frame, nullable=["签约金额", "回款金额", "行业领域", "回款率"]
+    )
+
+
+def _inspection(rng: random.Random) -> pd.DataFrame:
+    """设备巡检（留出域）。用「车间/异常判定/处理耗时」构成业务语义。"""
+    rows = rng.randint(28, 100)
+    start = date(2025, 4, 1)
+    frame = pd.DataFrame(
+        {
+            "设备序列号": [f"DEV{400 + index}" for index in range(rows)],
+            "所属车间": [
+                rng.choice(["一号车间", "二号车间", "三号车间", "四号车间"])
+                for _ in range(rows)
+            ],
+            "巡检项目": [
+                rng.choice(["温度", "振动", "油压", "电流"]) for _ in range(rows)
+            ],
+            "异常判定": [rng.choice(["正常", "警告", "故障"]) for _ in range(rows)],
+            "处理耗时": [round(rng.uniform(0.5, 120), 1) for _ in range(rows)],
+            "巡检日期": [
+                start + timedelta(days=rng.randint(0, 150)) for _ in range(rows)
+            ],
+        }
+    )
+    frame["巡检日期"] = pd.to_datetime(frame["巡检日期"])
+    return _finalize(
+        rng, frame, nullable=["异常判定", "处理耗时", "巡检项目"]
+    )
+
+
 _GENERATORS = {
     "sales_orders": _sales_orders,
     "inventory": _inventory,
     "staffing": _staffing,
     "budget": _budget,
     "survey": _survey,
+    "logistics": _logistics,
+    "customers": _customers,
+    "inspection": _inspection,
 }
 
 

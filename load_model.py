@@ -15,7 +15,7 @@ REMOTE_PROVIDER = "remote"
 LOCAL_PROVIDER = "local"
 SUPPORTED_PROVIDERS = (REMOTE_PROVIDER, LOCAL_PROVIDER)
 
-DEFAULT_REMOTE_MODEL = "deepseek-v4-flash"
+DEFAULT_REMOTE_MODEL = "deepseek-flash"
 DEFAULT_LOCAL_MODEL = "qwen2.5-coder:1.5b"
 DEFAULT_LOCAL_BASE_URL = "http://localhost:11434/v1"
 # 本地服务不校验密钥，占位值即可；llama.cpp 与 Ollama 都接受任意非空字符串。

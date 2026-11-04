@@ -434,7 +434,12 @@ class ReleaseConfigWriterTests(unittest.TestCase):
             self.assertEqual(parsed.context_size, 4096)
             self.assertTrue(parsed.executable.endswith("llama-server.exe"))
             self.assertTrue(parsed.model_path.endswith("model.gguf"))
-            self.assertEqual(Path(parsed.executable).parent, base / "llama")
+            # 两侧都要 resolve：TEMP 可能是 8.3 短路径（C:\Users\ADMINI~1\...），
+            # 而生产代码会 resolve 传入的目录，直接比较会因长短名不一致而失败。
+            self.assertEqual(
+                Path(parsed.executable).parent.resolve(),
+                (base / "llama").resolve(),
+            )
 
     def test_release_config_writer_uses_dotenv_when_inherited_values_are_blank(self):
         environment = MODEL_CONFIG_WRITER["merge_build_environment"](

@@ -11,6 +11,8 @@ vibe_images/
 data/
 llm_config.json
 datasets/
+# 留出评测集同样是生成产物，由 pipeline/build_holdout_eval.py 重建
+datasets-holdout/
 # 本地推理运行时与模型文件（体积大，不入库）
 models/
 llama/

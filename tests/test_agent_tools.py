@@ -456,5 +456,30 @@ class ModelStatusEndpointTests(unittest.TestCase):
         self.assertIn("模型下载", captured.exception.detail)
 
 
+class AmbiguityGuidanceTests(unittest.TestCase):
+    """系统提示必须要求模型在歧义时澄清，而不是自行假设。"""
+
+    def test_prompt_requires_count_semantics_clarification(self):
+        # 「订单数」既可理解为记录条数，也可理解为去重编号个数；
+        # 两者的结果在有重复/空值时不同，必须问清而不是猜。
+        self.assertIn("计数口径", agent.AGENT_SYSTEM)
+        self.assertIn("去重", agent.AGENT_SYSTEM)
+        self.assertIn("记录条数", agent.AGENT_SYSTEM)
+
+    def test_prompt_requires_aggregation_function_clarification(self):
+        self.assertIn("统计方式", agent.AGENT_SYSTEM)
+
+    def test_prompt_requires_metric_column_clarification(self):
+        self.assertIn("指标所指", agent.AGENT_SYSTEM)
+
+    def test_prompt_discourages_restating_known_conditions(self):
+        # 澄清要短，只问缺的那一点。
+        self.assertIn("不要复述已知条件", agent.AGENT_SYSTEM)
+
+    def test_prompt_still_forbids_claiming_unexecuted_work(self):
+        # 新增歧义规则不能削弱原有的"不得谎称已完成"约束。
+        self.assertIn("不得声称未执行的操作已经完成", agent.AGENT_SYSTEM)
+
+
 if __name__ == "__main__":
     unittest.main()

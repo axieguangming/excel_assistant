@@ -114,7 +114,12 @@ def _aggregate(
         name = metric.name or f"{metric.column}_{metric.function}"
         while name in group_by or name in named_aggregations:
             name = f"{name}_{index}"
-        named_aggregations[name] = (metric.column, metric.function)
+        # count 的语义是「这一组有多少条记录」，与数的是哪一列无关。
+        # pandas 的 "size" 正好表示组内行数，且不跳过空值。
+        # 若沿用 "count"（即 Series.count），含空值的列会少算，同一句
+        # 「有多少条反馈」会因模型选了哪一列而得到不同结果。
+        agg_function = "size" if metric.function == "count" else metric.function
+        named_aggregations[name] = (metric.column, agg_function)
 
     if group_by:
         return (
@@ -134,8 +139,8 @@ def _aggregate(
             value = series.min()
         elif function == "max":
             value = series.max()
-        elif function == "count":
-            value = series.count()
+        elif function == "size":
+            value = len(df)
         else:
             value = series.nunique(dropna=True)
         values[name] = [value]
@@ -240,15 +245,54 @@ def _computed_column(df: pd.DataFrame, computed: ComputedColumnInput) -> pd.Data
     return df
 
 
-def _frame_observation(df: pd.DataFrame) -> str:
+def _frame_observation(df: pd.DataFrame, *, read_only: bool = False) -> str:
     preview = df.head(8).to_string(index=False, max_colwidth=40)
     if not preview:
         preview = "（无数据行）"
+    if read_only:
+        # 只读工具的产出不是新的工作表。若照旧写成「当前结果为 N 行」
+        # 模型会误以为原始数据被替换掉了，从而放弃后续步骤。
+        return (
+            f"查看成功（只读，当前工作表数据未改变，后续步骤仍在原数据上继续）。\n"
+            f"本次查看得到 {len(df)} 行 × {len(df.columns)} 列：\n"
+            f"字段：{list(df.columns)}\n"
+            f"内容：\n{preview}"
+        )
     return (
         f"操作成功。当前结果为 {len(df)} 行 × {len(df.columns)} 列。\n"
         f"字段：{list(df.columns)}\n"
         f"样例：\n{preview}"
     )
+
+
+def chart_observation(chart: "CreateChartInput", chart_url: str) -> str:
+    """`create_chart` 成功时返回给模型的文本。
+
+    单独抽成函数是为了让训练数据构造与线上工具共用同一份实现——否则会退化成
+    「训练时返回数据预览、推理时返回图表地址」，模型学不到画图这一步的存在。
+    """
+    return f"图表生成成功：{chart_url}\n图表设置：{chart.model_dump()}"
+
+
+def observation_for_step(
+    tool_name: str,
+    df: pd.DataFrame,
+    *,
+    arguments: dict[str, Any] | None = None,
+    chart_url: str | None = None,
+) -> str:
+    """按工具语义生成「成功」时的观察文本。训练数据构造使用此函数。
+
+    - 只读工具（`describe_data`）走只读措辞
+    - `create_chart` 返回图表地址与设置，不像数据框工具那样返回行列表
+    - 其余数据框工具返回结果预览
+    """
+    if tool_name == "describe_data":
+        return _frame_observation(df, read_only=True)
+    if tool_name == "create_chart":
+        chart = CreateChartInput.model_validate(arguments or {})
+        return chart_observation(chart, chart_url or "")
+    return _frame_observation(df)
 
 
 def _record_plan(
@@ -305,6 +349,7 @@ def _tool_command(
     ok: bool,
     result: pd.DataFrame | None = None,
     chart_file: str | None = None,
+    read_only: bool = False,
 ) -> Command:
     update: dict[str, Any] = {
         "plans": _record_plan(
@@ -318,7 +363,12 @@ def _tool_command(
         "messages": [ToolMessage(content=content, tool_call_id=tool_call_id)],
     }
     if result is not None:
-        update.update({"current_df": result, "result_df": result})
+        update["last_result_rows"] = len(result)
+        # result_df 是"最近一次产出"，用于展示/导出；只读工具也会更新它。
+        update["result_df"] = result
+        # current_df 是后续步骤的工作副本，只读工具（如 describe_data）不改动它。
+        if not read_only:
+            update["current_df"] = result
     if chart_file is not None:
         update["chart_file"] = chart_file
     return Command(update=update)
@@ -330,6 +380,8 @@ def _execute_dataframe_tool(
     tool_name: str,
     arguments: dict[str, Any],
     operation: Callable[[pd.DataFrame], pd.DataFrame],
+    *,
+    read_only: bool = False,
 ) -> Command:
     try:
         result = operation(state["current_df"].copy())
@@ -341,6 +393,7 @@ def _execute_dataframe_tool(
             arguments,
             f"工具执行失败：{error}",
             ok=False,
+            read_only=read_only,
         )
 
     return _tool_command(
@@ -348,9 +401,10 @@ def _execute_dataframe_tool(
         tool_call_id,
         tool_name,
         arguments,
-        _frame_observation(result),
+        _frame_observation(result, read_only=read_only),
         ok=True,
         result=result,
+        read_only=read_only,
     )
 
 
@@ -395,7 +449,11 @@ def aggregate_data(
     tool_call_id: Annotated[str, InjectedToolCallId],
     group_by: list[str] | None = None,
 ) -> Command:
-    """对当前数据按字段分组，并计算总和、均值、最大值、最小值、计数或去重计数。"""
+    """对当前数据按字段分组，并计算总和、均值、最大值、最小值、行数或去重计数。
+
+    count 表示该组有多少行记录（与指定列是否为空无关）；若需要「某列有多少个
+    非空值」，请先用 filter_rows 过滤掉空值再 count。
+    """
     parsed = AggregateDataInput(group_by=group_by or [], metrics=metrics)
     return _execute_dataframe_tool(
         state,
@@ -480,13 +538,14 @@ def describe_data(
     state: Annotated[dict[str, Any], InjectedState],
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Command:
-    """对当前数据生成数值列和文本列的描述统计。"""
+    """查看当前数据的描述统计（只读，不会改变后续步骤的数据）。"""
     return _execute_dataframe_tool(
         state,
         tool_call_id,
         "describe_data",
         {},
         _describe_data,
+        read_only=True,
     )
 
 
@@ -599,13 +658,12 @@ def create_chart(
     current_df = state["current_df"]
     try:
         chart_url = _create_chart(current_df, chart)
-        content = f"图表生成成功：{chart_url}\n图表设置：{chart.model_dump()}"
         return _tool_command(
             state,
             tool_call_id,
             "create_chart",
             chart.model_dump(exclude_none=True),
-            content,
+            chart_observation(chart, chart_url),
             ok=True,
             chart_file=chart_url,
         )

@@ -155,6 +155,21 @@ def _format_timestamp(value: pd.Timestamp) -> str:
     return value.strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _format_number(value: float) -> str:
+    """把浮点数规范成可比较的字符串。
+
+    不能用固定的 6 位小数：数值大到 2.7e10 时，float64 的分辨率约为 3.8e-6，
+    已经比 1e-6 的量化步长更粗。此时 CSV 往返与重新计算结果会相差 1 个 ULP，
+    却落在不同的量化边界两侧，把正确结果误判成"数据内容不同"。
+
+    改用 12 位有效数字（按相对精度比较），既覆盖浮点噪声，又能区分真实差异。
+    """
+    if value == 0:
+        # 避免 -0.0 与 0.0 产生 "-0" / "0" 的假差异。
+        return "0"
+    return f"{value:.12g}"
+
+
 def _cell_key(value: Any) -> str:
     """把单元格规范化成可比较的字符串，抹平 CSV 往返带来的表示差异。"""
     if value is None:
@@ -162,7 +177,7 @@ def _cell_key(value: Any) -> str:
     if isinstance(value, float):
         if math.isnan(value):
             return ""
-        return f"{value:.6f}".rstrip("0").rstrip(".")
+        return _format_number(value)
     if isinstance(value, bool):
         return str(value)
     if isinstance(value, int):
@@ -181,7 +196,7 @@ def _cell_key(value: Any) -> str:
         if parsed is not None and not pd.isna(parsed):
             return _format_timestamp(pd.Timestamp(parsed))
     try:
-        return f"{float(text):.6f}".rstrip("0").rstrip(".")
+        return _format_number(float(text))
     except (TypeError, ValueError):
         return text
 

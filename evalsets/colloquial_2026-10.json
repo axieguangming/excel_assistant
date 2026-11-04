@@ -1,0 +1,264 @@
+{
+  "version": 1,
+  "dataset": "datasets/2026-10-29",
+  "created_at": "2026-10-30",
+  "description": "口语化 / 歧义 / 不可完成请求评测集。equivalent 类的真值沿用对应规则样本的期望操作链与结果 CSV，问题改写为真实用户口吻；unanswerable 类要求模型不强行套用执行类工具。",
+  "items": [
+    {
+      "id": "cq-001",
+      "kind": "equivalent",
+      "source_sample": "budget-20251072-001",
+      "style": "口语+省略表名",
+      "question": "各科目实际支出各花了多少？汇总一下画个柱状图给我看看",
+      "note": "省略了表名与“分组”字样，考察是否能从数据概况推断科目列与汇总口径"
+    },
+    {
+      "id": "cq-002",
+      "kind": "equivalent",
+      "source_sample": "budget-20251072-003",
+      "style": "口语+业务化表述",
+      "question": "帮我算一下差异减掉实际支出，结果加成一列，小数留两位就行",
+      "note": "未指定新列名，验证结果值正确即可（列名允许自由发挥）"
+    },
+    {
+      "id": "cq-003",
+      "kind": "equivalent",
+      "source_sample": "budget-20251072-005",
+      "style": "口语+排除式表达",
+      "question": "把物料相关的记录都去掉，我只要剩下的",
+      "note": "“去掉”对应 ne 过滤，不是“只保留”的反向错误"
+    },
+    {
+      "id": "cq-004",
+      "kind": "equivalent",
+      "source_sample": "budget-20251072-007",
+      "style": "多步口语",
+      "question": "各部门平均预算多少？从高到低排好再画个柱状图",
+      "note": "三步链：分组均值 → 降序 → 柱状图，用一句话自然表达"
+    },
+    {
+      "id": "cq-005",
+      "kind": "equivalent",
+      "source_sample": "budget-20251072-013",
+      "style": "口语+最少语义",
+      "question": "预算金额最小的5条是哪几条",
+      "note": "要求升序前5，容易和“金额最小”误解为降序"
+    },
+    {
+      "id": "cq-006",
+      "kind": "equivalent",
+      "source_sample": "budget-20251072-015",
+      "style": "多步口语+无列名",
+      "question": "预算金额乘上差异，加个新列，然后挑出乘积最大的10行",
+      "note": "计算列 → Top N，且未给出新列名"
+    },
+    {
+      "id": "cq-007",
+      "kind": "equivalent",
+      "source_sample": "budget-20251072-017",
+      "style": "极简口语",
+      "question": "把差异画成柱状图",
+      "note": "未指定横轴，应只传 chart_y"
+    },
+    {
+      "id": "cq-008",
+      "kind": "equivalent",
+      "source_sample": "budget-20251072-019",
+      "style": "口语+值含引号",
+      "question": "科目是空白的那些，统一填成“未知”",
+      "note": "填充值出现在引号里，考验参数抽取"
+    },
+    {
+      "id": "cq-009",
+      "kind": "equivalent",
+      "source_sample": "budget-20251072-021",
+      "style": "口语+时序语义",
+      "question": "按月看预算金额的平均水平，降序排",
+      "note": "“按月”对应月份列分组"
+    },
+    {
+      "id": "cq-010",
+      "kind": "equivalent",
+      "source_sample": "budget-20251072-023",
+      "style": "多步口语+结果列指代",
+      "question": "差异乘实际支出算出来，再按部门汇总总和",
+      "note": "第二步要引用第一步新生成的列"
+    },
+    {
+      "id": "cq-011",
+      "kind": "equivalent",
+      "source_sample": "sales_orders-20251059-003",
+      "style": "口语+空值语义",
+      "question": "只看有折扣的订单，取折扣最高的10条",
+      "note": "“有折扣”对应 not_empty 过滤"
+    },
+    {
+      "id": "cq-012",
+      "kind": "equivalent",
+      "source_sample": "sales_orders-20251059-011",
+      "style": "极简口语",
+      "question": "数量多的排前面",
+      "note": "省略排序方向词，需推断降序"
+    },
+    {
+      "id": "cq-013",
+      "kind": "equivalent",
+      "source_sample": "sales_orders-20251074-001",
+      "style": "口语+图表类型指定",
+      "question": "各产品线销售额合计，用折线图看趋势",
+      "note": "聚合后绘制折线图"
+    },
+    {
+      "id": "cq-014",
+      "kind": "equivalent",
+      "source_sample": "sales_orders-20251074-008",
+      "style": "口语+计数语义",
+      "question": "每个产品线有多少笔订单",
+      "note": "“多少笔”对应 count 而非 sum"
+    },
+    {
+      "id": "cq-015",
+      "kind": "equivalent",
+      "source_sample": "staffing-20251066-005",
+      "style": "口语+整体汇总",
+      "question": "总工时加起来是多少",
+      "note": "无分组字段的整体汇总"
+    },
+    {
+      "id": "cq-016",
+      "kind": "equivalent",
+      "source_sample": "staffing-20251066-009",
+      "style": "口语+隐含排序",
+      "question": "谁加班时间长，按人画个柱状图",
+      "note": "横轴为人名列，未要求排序"
+    },
+    {
+      "id": "cq-017",
+      "kind": "equivalent",
+      "source_sample": "staffing-20251066-011",
+      "style": "口语+零值填充",
+      "question": "加班时长空着的当0处理",
+      "note": "填充值 0 是数值而非字符串"
+    },
+    {
+      "id": "cq-018",
+      "kind": "equivalent",
+      "source_sample": "staffing-20251066-013",
+      "style": "口语+Top N",
+      "question": "工时最多的前5个人",
+      "note": "分组汇总后取前5"
+    },
+    {
+      "id": "cq-019",
+      "kind": "equivalent",
+      "source_sample": "staffing-20251066-015",
+      "style": "模糊但可执行",
+      "question": "这表大概什么情况？给我个统计概览",
+      "note": "模糊表述应映射到 describe_data"
+    },
+    {
+      "id": "cq-020",
+      "kind": "equivalent",
+      "source_sample": "staffing-20251066-019",
+      "style": "多步口语+填充策略",
+      "question": "部门有空的先按上面的补全，然后数一下每个部门几条记录",
+      "note": "“按上面的补全”对应 ffill"
+    },
+    {
+      "id": "cq-021",
+      "kind": "equivalent",
+      "source_sample": "staffing-20251066-023",
+      "style": "口语+去重",
+      "question": "员工编号重复的只保留一条",
+      "note": "按指定列去重，非整行"
+    },
+    {
+      "id": "cq-022",
+      "kind": "equivalent",
+      "source_sample": "survey-20251078-001",
+      "style": "口语+饼图",
+      "question": "各城市满意度加起来，画饼图看占比",
+      "note": "聚合后饼图"
+    },
+    {
+      "id": "cq-023",
+      "kind": "equivalent",
+      "source_sample": "survey-20251078-003",
+      "style": "极简口语+常数运算",
+      "question": "推荐意愿统一加100",
+      "note": "字段与常数相加"
+    },
+    {
+      "id": "cq-024",
+      "kind": "unanswerable",
+      "workbook_id": "budget-20251072",
+      "style": "超能力：预测",
+      "question": "帮我预测下个季度各科目的实际支出",
+      "note": "现有工具无预测能力，正确行为是说明无法完成而不是硬套汇总"
+    },
+    {
+      "id": "cq-025",
+      "kind": "unanswerable",
+      "workbook_id": "sales_orders-20251059",
+      "style": "超能力：跨表合并",
+      "question": "把这个表和客户表按订单号合并一下",
+      "note": "只有一张工作表，且无 merge 工具"
+    },
+    {
+      "id": "cq-026",
+      "kind": "unanswerable",
+      "workbook_id": "sales_orders-20251074",
+      "style": "超能力：透视表",
+      "question": "做个数据透视表，行是区域列是产品线",
+      "note": "无透视工具；虽然可用两次分组近似，但结果结构不同，应澄清"
+    },
+    {
+      "id": "cq-027",
+      "kind": "unanswerable",
+      "workbook_id": "survey-20251078",
+      "style": "超能力：条件格式",
+      "question": "满意度低于3的行标红",
+      "note": "无格式设置工具"
+    },
+    {
+      "id": "cq-028",
+      "kind": "unanswerable",
+      "workbook_id": "staffing-20251066",
+      "style": "外部信息缺失",
+      "question": "给每个人算一下这个月的工资",
+      "note": "表内无薪资标准，无法推算"
+    },
+    {
+      "id": "cq-029",
+      "kind": "unanswerable",
+      "workbook_id": "sales_orders-20251059",
+      "style": "超能力：窗口函数",
+      "question": "画出销售额的7天移动平均趋势",
+      "note": "无窗口/滚动计算工具"
+    },
+    {
+      "id": "cq-030",
+      "kind": "unanswerable",
+      "workbook_id": "survey-20251078",
+      "style": "超能力：语义分析",
+      "question": "把这些反馈文字做一下情感分析，统计正面负面比例",
+      "note": "无文本语义分析工具"
+    },
+    {
+      "id": "cq-031",
+      "kind": "unanswerable",
+      "workbook_id": "staffing-20251066",
+      "style": "超能力：排班优化",
+      "question": "帮我排一下下个月的班表，保证每人每天不超过8小时",
+      "note": "无排班生成工具；这是约束求解问题"
+    },
+    {
+      "id": "cq-032",
+      "kind": "unanswerable",
+      "workbook_id": "budget-20251072",
+      "style": "超能力：写回公式",
+      "question": "在差异列右边插入一个公式列，用预算金额减实际支出自动算",
+      "note": "工具只能生成静态计算列，不能写入 Excel 公式"
+    }
+  ]
+}

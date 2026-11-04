@@ -180,7 +180,7 @@ def _checked_positive_float(name: str, value: str) -> float:
 def _build_remote_config(environment: Mapping[str, str]) -> dict[str, object]:
     api_key = environment.get("DEEPSEEK_API_KEY", "").strip()
     base_url = environment.get("DEEPSEEK_BASE_URL", "").strip()
-    model = environment.get("DEEPSEEK_MODEL", "deepseek-v4-flash").strip()
+    model = environment.get("DEEPSEEK_MODEL", "deepseek-flash").strip()
 
     legacy_config = environment.get("deepseek_api", "")
     if legacy_config:
