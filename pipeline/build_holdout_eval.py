@@ -76,6 +76,14 @@ from make_ambiguity_dataset import ask_questions, is_usable  # noqa: E402
 SEED_GROUP_A = 20260301
 SEED_GROUP_B = 20260501
 
+# 第二批（扩大测试集）用的独立种子，与第一批完全不同的表与数据值。
+SEED_GROUP_A2 = 20260701
+SEED_GROUP_B2 = 20260801
+PRESETS = {
+    "": (SEED_GROUP_A, SEED_GROUP_B),
+    "2": (SEED_GROUP_A2, SEED_GROUP_B2),
+}
+
 
 def build_clarify_records(
     tables: list[SyntheticTable],
@@ -355,7 +363,15 @@ def main() -> int:
         default=1,
         help="每个歧义点生成几条问法",
     )
+    parser.add_argument(
+        "--seed-preset",
+        default="",
+        choices=sorted(PRESETS),
+        help="种子预设：空=第一批（A 20260301 / B 20260501）；2=第二批（扩大测试集）",
+    )
     args = parser.parse_args()
+
+    seed_a, seed_b = PRESETS[args.seed_preset]
 
     root = Path(args.out)
     root.mkdir(parents=True, exist_ok=True)
@@ -375,7 +391,7 @@ def main() -> int:
             report["groups"]["a"] = build_group(
                 name="a",
                 domains=domains,
-                seed=SEED_GROUP_A,
+                seed=seed_a,
                 tables_per_domain=args.tables_per_domain,
                 chains_per_table=args.chains_per_table,
                 max_steps=args.max_steps,
@@ -393,7 +409,7 @@ def main() -> int:
             report["groups"]["b"] = build_group(
                 name="b",
                 domains=domains,
-                seed=SEED_GROUP_B,
+                seed=seed_b,
                 tables_per_domain=args.tables_per_domain,
                 chains_per_table=args.chains_per_table,
                 max_steps=args.max_steps,
