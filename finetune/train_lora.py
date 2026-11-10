@@ -48,9 +48,9 @@ except ImportError:  # pragma: no cover - 仅用于无依赖环境
 
 
 # 序列长度上限。必须覆盖数据里最长样本，否则尾部（最终答复）会被静默截断，
-# 模型只学到工具调用、学不到汇报。当前数据（4931 条）最长 5217 token。
+# 模型只学到工具调用、学不到汇报。当前数据最长 5980 token（含失败-修正轨迹）。
 # 用 2048 会截掉全部 assistant 标签；4608 仍有 5.3% 样本被截断。
-DEFAULT_MAX_LENGTH = 5376
+DEFAULT_MAX_LENGTH = 6144
 
 
 class TrajectoryCollator:

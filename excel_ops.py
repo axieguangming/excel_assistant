@@ -295,6 +295,20 @@ def observation_for_step(
     return _frame_observation(df)
 
 
+def error_observation(error: object, *, tool_name: str = "") -> str:
+    """工具执行失败时返回给模型的文本。
+
+    线上工具与训练数据构造必须共用这一处，否则「报错后恢复」样本会因为
+    文本格式不同而学不到真实行为。
+
+    `create_chart` 沿用「图表生成失败」的既有措辞——它在 v2 训练与评测中
+    已固定，改动会让新旧模型不可比。
+    """
+    if tool_name == "create_chart":
+        return f"图表生成失败：{error}"
+    return f"工具执行失败：{error}"
+
+
 def _record_plan(
     state: dict[str, Any],
     tool_name: str,
@@ -391,7 +405,7 @@ def _execute_dataframe_tool(
             tool_call_id,
             tool_name,
             arguments,
-            f"工具执行失败：{error}",
+            error_observation(error),
             ok=False,
             read_only=read_only,
         )
@@ -673,7 +687,7 @@ def create_chart(
             tool_call_id,
             "create_chart",
             chart.model_dump(exclude_none=True),
-            f"图表生成失败：{error}",
+            error_observation(error, tool_name="create_chart"),
             ok=False,
         )
 

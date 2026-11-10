@@ -142,8 +142,8 @@ class MaxLengthDefaultTests(unittest.TestCase):
         cls.module = load_train_module()
 
     def test_default_is_large_enough_for_current_data(self):
-        # 当前数据实测最长 5217 token；留出余量防止后续数据变长。
-        self.assertGreaterEqual(self.module.DEFAULT_MAX_LENGTH, 5217)
+        # 当前数据（含失败-修正轨迹）实测最长 5980 token；留出余量防止后续数据变长。
+        self.assertGreaterEqual(self.module.DEFAULT_MAX_LENGTH, 5980)
 
     def test_dataset_truncation_only_affects_tail(self):
         """超长时只截尾部，且截断后仍保留 assistant token 供训练。"""

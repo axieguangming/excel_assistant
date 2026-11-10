@@ -162,5 +162,41 @@ class DeterminismTests(unittest.TestCase):
         )
 
 
+class ErrorObservationTests(unittest.TestCase):
+    """失败文本必须与线上工具一致，否则「报错后恢复」样本学不到真实行为。"""
+
+    def test_dataframe_tool_prefix(self):
+        self.assertEqual(
+            excel_ops.error_observation(ValueError("找不到字段：['x']")),
+            "工具执行失败：找不到字段：['x']",
+        )
+
+    def test_create_chart_keeps_legacy_prefix(self):
+        # create_chart 在 v2 训练与评测中已固定为「图表生成失败」，不能改动。
+        self.assertEqual(
+            excel_ops.error_observation(ValueError("x"), tool_name="create_chart"),
+            "图表生成失败：x",
+        )
+
+    def test_live_tool_uses_same_text(self):
+        """真实工具抛错时返回的文本必须与 error_observation 一致。"""
+        frame = pd.DataFrame({"部门": ["A"], "金额": [1.0]})
+        state = {"current_df": frame, "plans": [], "tool_steps": 0}
+        command = excel_ops._execute_dataframe_tool(
+            state,
+            "call-1",
+            "aggregate_data",
+            {"group_by": ["不存在的列"]},
+            lambda df: excel_ops._aggregate(
+                df,
+                ["不存在的列"],
+                [__import__("schemas").Metric(column="金额", function="sum")],
+            ),
+        )
+        content = command.update["messages"][0].content
+        self.assertTrue(content.startswith("工具执行失败："))
+        self.assertIn("可用字段", content)
+
+
 if __name__ == "__main__":
     unittest.main()
