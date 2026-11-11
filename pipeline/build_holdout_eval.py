@@ -164,6 +164,33 @@ def build_clarify_records(
     return records, rejects
 
 
+def generate_persisted_tables(
+    tables_dir: Path,
+    *,
+    count: int,
+    seed: int,
+    domains: tuple[str, ...],
+) -> list[SyntheticTable]:
+    """生成表格、写盘，再按写盘后的真实 dtype 回读。
+
+    **训练数据必须用回读的表来构造**，不能用 `generate_tables()` 返回的
+    内存表。Excel 往返会改变 dtype：
+
+        内存  整数列 Int64    → 观察文本里是 "1"
+        回读  整数列 float64  → 观察文本里是 "1.0"
+        内存  缺失值 ""       → 观察文本里是 ""
+        回读  缺失值 NaN      → 观察文本里是 "NaN"
+
+    评测时表格是从磁盘读的，所以推理侧的观察文本是回读后的形态。若训练数据
+    用内存表构造，模型训练的输入就与线上不一致——这是典型的训练/推理错配。
+
+    `dataset_builder/cli.py` 一直是这么做的（写盘后回读），这里与它对齐。
+    """
+    tables = generate_tables(count, seed=seed, domains=domains)
+    save_tables(tables, tables_dir, table_format="xlsx")
+    return load_tables(tables_dir)
+
+
 def build_group(
     *,
     name: str,
@@ -181,14 +208,16 @@ def build_group(
 ) -> dict:
     """生成一组表 + 链 + 问题，返回统计信息。"""
     print(f"\n{'=' * 70}\n{name}: {len(domains)} 个域 × {tables_per_domain} 张表")
-    tables = generate_tables(
-        tables_per_domain * len(domains),
+    # 每组独立目录，各自带 index.json，避免两组互相覆盖。
+    tables_dir = root / f"tables-{name}"
+    # 注意：必须用写盘后**回读**的表来构造训练数据，否则观察文本的 dtype
+    # 会与评测时（从磁盘读）不一致。详见 generate_persisted_tables 的说明。
+    tables = generate_persisted_tables(
+        tables_dir,
+        count=tables_per_domain * len(domains),
         seed=seed,
         domains=domains,
     )
-    # 每组独立目录，各自带 index.json，避免两组互相覆盖。
-    tables_dir = root / f"tables-{name}"
-    save_tables(tables, tables_dir, table_format="xlsx")
 
     stats = {
         "tables": len(tables),

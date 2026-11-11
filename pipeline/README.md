@@ -53,9 +53,19 @@ python pipeline/verify_variants.py                            # 反向解析校�
 | 脚本 | 作用 |
 | --- | --- |
 | `build_holdout_eval.py` | 构建独立留出集：A 组（训练域新数据）/ B 组（全新业务域）。`--seed-preset 2` 生成第二批 |
+| `verify_train_infer_parity.py` | **训练/推理一致性体检**：比对一份数据里的 `tools`、system prompt 与（重放得到的）观察文本是否与当前代码一致，不一致时退出码为 1 |
 | `compare_versions.py` | 多版本逐项对比（通过率 + 关注缺陷指标） |
 | `compare_paired.py` | **配对 McNemar 精确检验 + Wilson 区间**，并列出不一致样本清单 |
 | `bench_inference.py` | 单次推理延迟基准（首 token、解码速度、按输出长度换算） |
+
+`verify_train_infer_parity.py` 用来回答「是不是代码改了但模型没重训」。
+这个项目已经出现过五次格式漂移（工具调用标签、观察文本措辞、tools schema、
+历史 `arguments` 编码、Excel 往返的 dtype），每一次都是「模型学到 A、线上发 B」。
+所以每次改完 prompt / 工具 / 观察文本后，应该跑一遍：
+
+```powershell
+python pipeline/verify_train_infer_parity.py
+```
 
 ```powershell
 # 第一批 = dev 集（找失败、调 DPO）
