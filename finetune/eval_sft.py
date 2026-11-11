@@ -344,13 +344,34 @@ def has_clarification_cue(
     return any(term in text for term in expected_terms)
 
 
-def build_remote_model(base_url: str, api_key: str, model_name: str):
-    """构造远程 OpenAI 兼容模型，供强模型基线使用。
+def build_remote_model(
+    base_url: str,
+    api_key: str,
+    model_name: str,
+    *,
+    training_schema: bool = True,
+    fold_history: bool = False,
+):
+    """构造远程 OpenAI 兼容模型。
 
-    `agent.invoke_agent` 只需要 `bind_tools` 与 `invoke`，LangChain 的聊天模型
-    已满足；这里不引入额外封装，避免与本地模型的解析逻辑混淆。
+    `training_schema=True`（默认）会套上 `schema_llm.TrainingSchemaChatModel`，
+    让它发送与训练完全一致的 tools schema。这是必需的——LangChain 的
+    `bind_tools()` 会重新转换一遍，两者并不相同：
+
+        训练数据 schema  5,704 字符
+        LangChain 转换后  4,558 字符
+
+    `fold_history=True` 再叠加历史折叠，解决 GGUF 掉分的真正主因：
+    llama.cpp 会把历史工具调用的 `arguments` 字符串解析回对象再渲染，
+    而训练数据里它是字符串（模板会二次编码）。同权重、同 schema、同 20 条：
+
+        transformers（与训练一致）  85%  (17/20)
+        llama-server（未折叠）       70%  (14/20)
+
+    折叠后服务端渲染与训练基准逐字节相同（6506 == 6506，见
+    `build/diag_fold_history.py`）。因为折叠硬编码了 Qwen 的文本格式，
+    只在本项目微调的 Qwen 模型（本地 llama.cpp / Ollama）上启用。
     """
-    from langchain.chat_models import init_chat_model
     from dotenv import load_dotenv
 
     load_dotenv()
@@ -360,13 +381,30 @@ def build_remote_model(base_url: str, api_key: str, model_name: str):
         raise SystemExit("远程评测需要 API Key：请设置 --api-key 或 .env 中的 DEEPSEEK_API_KEY。")
     if not resolved_model:
         raise SystemExit("远程评测需要模型名：请设置 --remote-model 或 .env 中的 DEEPSEEK_MODEL。")
-    return init_chat_model(
+
+    from langchain.chat_models import init_chat_model
+
+    inner = init_chat_model(
         model=resolved_model,
         model_provider="openai",
         temperature=0,
         api_key=resolved_key,
         base_url=base_url,
     )
+    if not training_schema:
+        return inner
+
+    from schema_llm import TrainingSchemaChatModel
+
+    return TrainingSchemaChatModel(inner, fold_tool_history=fold_history)
+
+
+def is_loopback(base_url: str) -> bool:
+    """判断是否指向本机服务（本项目微调的 Qwen 模型就跑在本机）。"""
+    from urllib.parse import urlsplit
+
+    host = (urlsplit(base_url).hostname or "").lower()
+    return host in {"127.0.0.1", "localhost", "::1"}
 
 
 def main() -> int:
@@ -389,6 +427,23 @@ def main() -> int:
         "--remote-model",
         default="",
         help="远程模型的名称；留空则读 .env 中的 DEEPSEEK_MODEL",
+    )
+    parser.add_argument(
+        "--langchain-tools",
+        action="store_true",
+        help=(
+            "远程模式改用 LangChain 的 schema 转换（旧行为）。默认使用训练一致的 "
+            "tool_definitions()，两者差异见 build_remote_model 的注释。"
+        ),
+    )
+    parser.add_argument(
+        "--fold-history",
+        dest="fold_history",
+        action="store_true",
+        help=(
+            "把历史工具调用折叠成 Qwen 纯文本。实测无效（70% → 60%），"
+            "仅用于定位 prompt 差异的实验。默认关闭。"
+        ),
     )
     parser.add_argument("--model", default="models/Qwen2.5-1.5B-Instruct")
     parser.add_argument("--adapter", default="build/lora-expanded")
@@ -431,7 +486,17 @@ def main() -> int:
     }
 
     if args.base_url:
-        llm = build_remote_model(args.base_url, args.api_key, args.remote_model)
+        llm = build_remote_model(
+            args.base_url,
+            args.api_key,
+            args.remote_model,
+            training_schema=not args.langchain_tools,
+            fold_history=bool(args.fold_history),
+        )
+        print(
+            f"远程模式：schema={'训练一致' if not args.langchain_tools else 'LangChain'}，"
+            f"历史折叠={'开' if args.fold_history else '关'}"
+        )
         adapter = ""
         label = f"远程 {args.remote_model or '（读 .env）'}"
     else:

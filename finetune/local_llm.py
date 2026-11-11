@@ -24,20 +24,14 @@ _TOOL_CALL_CLOSE = "</tool_call>"
 
 
 def _tool_definition(tool: Any) -> dict[str, Any]:
-    """与 `finetune.dataset.tool_definitions()` 保持完全一致的 schema。"""
-    if getattr(tool, "args_schema", None) is not None:
-        schema = tool.args_schema.model_json_schema()
-        schema.pop("title", None)
-    else:
-        schema = {"type": "object", "properties": {}}
-    return {
-        "type": "function",
-        "function": {
-            "name": tool.name,
-            "description": tool.description,
-            "parameters": schema,
-        },
-    }
+    """与训练侧 schema 完全一致。
+
+    实现已抽到根目录 `tool_schema.py`，训练、transformers 推理、HTTP 推理
+    三处共用同一份代码。这里保留单工具版本，是因为 `bind_tools` 可能只传子集。
+    """
+    from tool_schema import describe_tool
+
+    return describe_tool(tool)
 
 
 def _to_chat_messages(messages: Sequence[BaseMessage]) -> list[dict[str, Any]]:

@@ -216,6 +216,20 @@ def current_provider() -> str:
 
 
 def init_llm():
+    """构造聊天模型，并统一使用与训练一致的 tools schema。
+
+    为什么要包一层 `TrainingSchemaChatModel`：LangChain 的 `bind_tools()`
+    会把工具重新转换成 OpenAI 格式，结果和训练数据里发给模型的 schema
+    不一样（9 个工具里 0 个相同）。模型学到的是训练那份，所以推理必须
+    原样复现，否则本地小模型会明显退化。
+
+    本地模式**不**开启 `fold_tool_history`：它虽然能把 llama.cpp 渲染出的
+    prompt 压到与训练逐字节相同，但实测反而掉分（20 条 70% → 60%），
+    说明 GGUF 的损失不在历史参数编码。真正的原因在采样器侧，见
+    LOCAL_MODEL.md 的启动参数要求。
+    """
+    from schema_llm import TrainingSchemaChatModel
+
     if _is_frozen():
         package_config = _load_packaged_config()
         provider = _normalize_provider(
@@ -226,7 +240,7 @@ def init_llm():
             if provider == REMOTE_PROVIDER
             else _load_local_config(package_config, require_loopback=True)
         )
-        return init_chat_model(**config)
+        return TrainingSchemaChatModel(init_chat_model(**config))
 
     load_dotenv()
     provider = _normalize_provider(
@@ -235,4 +249,4 @@ def init_llm():
     config = (
         _load_local_config() if provider == LOCAL_PROVIDER else _load_remote_config()
     )
-    return init_chat_model(**config)
+    return TrainingSchemaChatModel(init_chat_model(**config))

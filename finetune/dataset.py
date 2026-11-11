@@ -27,25 +27,11 @@ from dataset_builder.executor import _apply_step
 from dataset_builder.tables import load_tables
 
 # 与推理时绑定给模型的工具定义保持一致。
+# 实现已移到根目录 `tool_schema.py`，训练与推理共用同一份代码。
 def tool_definitions() -> list[dict[str, Any]]:
-    definitions: list[dict[str, Any]] = []
-    for tool in excel_ops.EXCEL_TOOLS:
-        if tool.args_schema is not None:
-            schema = tool.args_schema.model_json_schema()
-            schema.pop("title", None)
-        else:
-            schema = {"type": "object", "properties": {}}
-        definitions.append(
-            {
-                "type": "function",
-                "function": {
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": schema,
-                },
-            }
-        )
-    return definitions
+    from tool_schema import tool_definitions as _tool_definitions
+
+    return _tool_definitions()
 
 
 def build_human_message(df: pd.DataFrame, question: str, history: list | None = None) -> str:
