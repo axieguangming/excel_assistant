@@ -19,5 +19,6 @@ models/
 llama/
 *.gguf
 
-# 求职用项目描述（个人简历材料，不适合公开仓库）
+# 求职材料（个人简历与面试准备，不适合公开仓库）
 docs/project-description.md
+docs/interview-qa.md
