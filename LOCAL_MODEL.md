@@ -37,6 +37,45 @@ LOCAL_BASE_URL=http://localhost:11434/v1
 
 本地开发使用远程模型时，`LLM_PROVIDER=remote`（默认）并配置 `DEEPSEEK_API_KEY`、`DEEPSEEK_BASE_URL`。旧式 `deepseek_api` JSON 配置仍可用于开发兼容，但新发行包使用上文所述的专用 `llm_config.json`。
 
+### llama-server 启动参数（重要）
+
+用 llama.cpp 部署微调模型时，**必须显式中和采样器**：
+
+```bat
+llama-server.exe -m models\excel-assistant-dpo2-q4km.gguf ^
+  --host 127.0.0.1 --port 8080 -c 8192 --jinja -np 1 ^
+  --temp 0 --top-k 1 --top-p 1.0 --min-p 0.0 --repeat-penalty 1.0
+```
+
+原因：llama-server 的默认值是
+`temperature 0.7 / top_k 20 / top_p 0.8 / min_p 0.05 / repeat_penalty 1.1`。
+即使客户端在请求里传 `temperature=0`，其余采样器仍按默认值生效。
+`repeat_penalty 1.1` 尤其实在有影响：工具调用会反复输出
+`"name"`、`"arguments"`、`aggregate_data` 这类相同短语，penalty 会压低这些
+token 的概率，导致模型改口、跳步或陷入重复调用。
+
+微调模型是按**贪心解码**训练的对照目标（评测侧 transformers 用
+`do_sample=False`），所以部署侧也要对齐到纯贪心。
+
+### 部署与评测的分数差异
+
+同一份权重在 `transformers`（bf16、贪心）与 `llama-server`（bf16 GGUF）上
+分数不同，20 条样本实测：transformers 17/20，llama-server 12–14/20。
+
+排查过程与结论（每一步都做了字节级比对）：
+
+| 检查项 | 结果 |
+| --- | --- |
+| tools schema 是否一致 | 曾经不一致（5,704 vs 4,558 字符），已统一到 `tool_schema.py` |
+| GGUF 内嵌 chat template | 与 HF 逐字节相同（2507 字符） |
+| 分词 | `/tokenize` 与 HF `input_ids` 完全相同（2130 tokens） |
+| 贪心生成 | 同一 prompt 两边输出逐字符相同 |
+| 采样器默认值 | **默认值偏离贪心，必须显式中和** |
+
+中和采样器后仍有 1–3 条的差距，且同配置重复测量本身波动 1–2 条。
+因此这属于**小样本测量噪声 + 后端数值差异**，不是可以通过改代码消除的
+格式 bug。正式对比时请用 ≥200 条样本，或对同配置重复测量取中位数。
+
 ## 数据与许可
 
 - 上传的文件和分析结果保存在 `%LOCALAPPDATA%\ExcelAssistant`。
