@@ -12,6 +12,7 @@ import threading
 from typing import Any, Callable
 
 from app_paths import get_data_dir
+from local_model_embedded import EmbeddedModelRuntime
 from local_model_server import (
     LocalModelServer,
     LocalModelStartupError,
@@ -263,8 +264,29 @@ def build_runtime(
     data_dir: str | Path | None = None,
     config: LocalServerConfig | None = None,
     manifest: ModelManifest | None = None,
-) -> LocalModelRuntime | None:
-    """按当前配置构造运行时；远程模式返回 None。"""
+) -> LocalModelRuntime | "EmbeddedModelRuntime" | None:
+    """按当前配置构造运行时；远程模式返回 None。
+
+    本地模式有两种后端：
+
+    - `transformers`：进程内加载权重，这里返回 `EmbeddedModelRuntime`。
+      实测 20 条样本 85%，而 llama.cpp 后端是 65%，且差异单向（见
+      `local_model_embedded.py`）。
+    - `llama_server`：启动外部 llama-server 子进程（旧行为）。
+    """
+    if config is None and manifest is None:
+        from local_model_embedded import (
+            local_backend,
+            load_embedded_config,
+            load_raw_config,
+        )
+
+        if local_backend(load_raw_config()) == "transformers":
+            embedded_config = load_embedded_config()
+            if embedded_config is None:
+                return None
+            return EmbeddedModelRuntime(embedded_config)
+
     resolved_config = config or load_local_server_config()
     if resolved_config is None:
         return None

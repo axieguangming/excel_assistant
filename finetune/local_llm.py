@@ -125,6 +125,11 @@ class LocalChatModel:
         self.model_name = model_name
         self.tools: list[dict[str, Any]] = []
 
+    @property
+    def device(self) -> str:
+        """当前承载权重的设备，供界面展示（如 `cuda:0` 或 `cpu`）。"""
+        return str(getattr(self.model, "device", ""))
+
     # ---- LangChain 兼容接口 -------------------------------------------
     def bind_tools(self, tools: Sequence[Any], **_: Any) -> "LocalChatModel":
         # 直接在此实例上保存：force_finalize 节点会复用同一个 llm 对象，

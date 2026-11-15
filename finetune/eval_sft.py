@@ -450,6 +450,14 @@ def main() -> int:
     parser.add_argument("--base-only", action="store_true")
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument(
+        "--ids",
+        default="",
+        help=(
+            "只评测指定的 sample_id（逗号分隔）。调试单条失败时用，"
+            "避免为了看一条而重跑整个切分。"
+        ),
+    )
+    parser.add_argument(
         "--kinds",
         default="",
         help="只评测指定类型（execute / clarify，逗号分隔）；留空表示全部",
@@ -469,6 +477,14 @@ def main() -> int:
     ]
     if args.limit:
         records = records[: args.limit]
+    if args.ids:
+        wanted_ids = {item.strip() for item in args.ids.split(",") if item.strip()}
+        unknown = wanted_ids - {record["sample_id"] for record in records}
+        if unknown:
+            print(f"警告：这些 sample_id 不在当前切分里：{sorted(unknown)}")
+        records = [record for record in records if record["sample_id"] in wanted_ids]
+        if not records:
+            raise SystemExit("没有一个 sample_id 命中，请检查 --ids 与 --split。")
     if args.kinds:
         wanted = {item.strip() for item in args.kinds.split(",") if item.strip()}
 

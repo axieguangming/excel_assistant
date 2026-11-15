@@ -211,11 +211,19 @@ async def chat(req: ChatRequest):
 
     runtime = get_runtime()
     if runtime is not None:
-        state = runtime.status()["state"]
+        status = runtime.status()
+        state = status["state"]
         if state in {"needs_download", "downloading", "verifying"}:
             raise HTTPException(
                 503,
                 "本地模型尚未准备好，请先完成模型下载（界面顶部会显示进度）。",
+            )
+        if state == "starting":
+            # 进程内加载 3 GB 权重需要数秒，这期间调用模型会阻塞很久或直接失败。
+            # 明确告知「正在加载」比让用户等一个无响应的请求更好。
+            raise HTTPException(
+                503,
+                status.get("message") or "本地模型正在加载，请稍候再试。",
             )
 
     try:

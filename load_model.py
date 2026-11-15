@@ -215,38 +215,86 @@ def current_provider() -> str:
         return REMOTE_PROVIDER
 
 
-def init_llm():
-    """构造聊天模型，并统一使用与训练一致的 tools schema。
+def _init_local_llm(*, require_loopback: bool):
+    """构造本地模式的聊天模型，按配置选择后端。
 
-    为什么要包一层 `TrainingSchemaChatModel`：LangChain 的 `bind_tools()`
-    会把工具重新转换成 OpenAI 格式，结果和训练数据里发给模型的 schema
-    不一样（9 个工具里 0 个相同）。模型学到的是训练那份，所以推理必须
-    原样复现，否则本地小模型会明显退化。
+    - `backend=transformers`（新版发行包默认）：在进程内加载权重。
+      实测同一份权重、同样 20 条样本，通过率 85%，而 llama.cpp 是 65%，
+      且差异是单向的（llama.cpp 独赢 0 条）。详见 `local_model_embedded.py`。
+    - `backend=llama_server`（旧行为）：连接外部 llama-server 的 HTTP 接口。
 
-    本地模式**不**开启 `fold_tool_history`：它虽然能把 llama.cpp 渲染出的
-    prompt 压到与训练逐字节相同，但实测反而掉分（20 条 70% → 60%），
-    说明 GGUF 的损失不在历史参数编码。真正的原因在采样器侧，见
-    LOCAL_MODEL.md 的启动参数要求。
+    保留旧后端是为了兼容已发布的安装包与本地开发用的 `.env`。
     """
+    from local_model_embedded import (  # 延迟导入，避免远程模式拉起 torch
+        EmbeddedModelError,
+        local_backend,
+        load_embedded_config,
+        load_raw_config,
+    )
+
+    backend = local_backend(load_raw_config())
+    if backend == "transformers":
+        config = load_embedded_config()
+        if config is None:
+            raise ModelConfigurationError(
+                "本地模型后端为 transformers，但没有读到模型目录配置。"
+                "请设置 LOCAL_MODEL_DIR，或在安装包的 llm_config.json 中写入 model_dir。"
+            )
+        from local_model_embedded import build_chat_model
+
+        try:
+            # 直接用模型对象，不再套 TrainingSchemaChatModel：
+            # LocalChatModel 内部已走 tool_schema.describe_tool，schema 与训练逐字节一致。
+            return build_chat_model(config)
+        except EmbeddedModelError as error:
+            raise ModelConfigurationError(str(error)) from error
+
+    if backend not in ("", "llama_server"):
+        raise ModelConfigurationError(
+            f"本地模型后端无效：{backend}。只支持 transformers 或 llama_server。"
+        )
+
     from schema_llm import TrainingSchemaChatModel
 
+    if _is_frozen():
+        package_config = _load_packaged_config()
+        config = _load_local_config(package_config, require_loopback=True)
+    else:
+        config = _load_local_config()
+    return TrainingSchemaChatModel(init_chat_model(**config))
+
+
+def init_llm():
+    """构造聊天模型。
+
+    远程模式：OpenAI 兼容客户端，套 `TrainingSchemaChatModel` 以发送训练格式的 schema。
+
+    本地模式分两种后端，具体见 `_init_local_llm`。
+
+    为什么远程与 llama-server 后端仍要套 `TrainingSchemaChatModel`：LangChain 的
+    `bind_tools()` 会把工具重新转换成 OpenAI 格式，结果和训练数据里发给模型的
+    schema 不一样（9 个工具里 0 个相同，5704 vs 4558 字符）。模型学到的是训练
+    那份，所以推理必须原样复现。
+    """
     if _is_frozen():
         package_config = _load_packaged_config()
         provider = _normalize_provider(
             package_config.get("provider"), source="安装包模型配置"
         )
-        config = (
-            _load_remote_config(package_config)
-            if provider == REMOTE_PROVIDER
-            else _load_local_config(package_config, require_loopback=True)
-        )
-        return TrainingSchemaChatModel(init_chat_model(**config))
+        if provider == REMOTE_PROVIDER:
+            from schema_llm import TrainingSchemaChatModel
+
+            return TrainingSchemaChatModel(
+                init_chat_model(**_load_remote_config(package_config))
+            )
+        return _init_local_llm(require_loopback=True)
 
     load_dotenv()
     provider = _normalize_provider(
         os.getenv("LLM_PROVIDER"), source="LLM_PROVIDER 环境变量"
     )
-    config = (
-        _load_local_config() if provider == LOCAL_PROVIDER else _load_remote_config()
-    )
-    return TrainingSchemaChatModel(init_chat_model(**config))
+    if provider == REMOTE_PROVIDER:
+        from schema_llm import TrainingSchemaChatModel
+
+        return TrainingSchemaChatModel(init_chat_model(**_load_remote_config()))
+    return _init_local_llm(require_loopback=False)
