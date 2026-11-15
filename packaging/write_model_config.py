@@ -74,6 +74,16 @@ def _checked_url(base_url: str, *, provider: str) -> str:
 
 
 def _build_local_config(environment: Mapping[str, str]) -> dict[str, object]:
+    backend = (
+        environment.get("LOCAL_BACKEND", "").strip().lower() or "llama_server"
+    )
+    if backend not in {"transformers", "llama_server"}:
+        raise SystemExit(
+            f"LOCAL_BACKEND must be transformers or llama_server, got {backend!r}."
+        )
+    if backend == "transformers":
+        return _build_embedded_config(environment)
+
     base_url = (
         environment.get("LOCAL_BASE_URL", "").strip() or DEFAULT_LOCAL_BASE_URL
     )
@@ -154,6 +164,54 @@ def _build_local_config(environment: Mapping[str, str]) -> dict[str, object]:
             part.strip() for part in extra_args.split(",") if part.strip()
         ]
 
+    return config
+
+
+def _build_embedded_config(environment: Mapping[str, str]) -> dict[str, object]:
+    """进程内 transformers 后端的配置。
+
+    只需要模型目录与设备信息：没有 llama-server、没有 HTTP 端点、没有下载地址。
+    模型随包分发（目录里是 merged 后的 HF 权重），因此不需要 SHA256 与字节数
+    ——文件完整性由安装包本身保证。
+    """
+    model_dir = environment.get("LOCAL_MODEL_DIR", "").strip()
+    if not model_dir:
+        raise SystemExit(
+            "LOCAL_BACKEND=transformers requires LOCAL_MODEL_DIR "
+            "(path to the merged HuggingFace model directory)."
+        )
+
+    model = environment.get("LOCAL_MODEL", "").strip() or DEFAULT_LOCAL_MODEL
+    device = environment.get("LOCAL_DEVICE", "").strip().lower() or "auto"
+    if device not in {"auto", "cuda", "cpu"}:
+        raise SystemExit(
+            f"LOCAL_DEVICE must be auto, cuda or cpu, got {device!r}."
+        )
+    dtype = environment.get("LOCAL_DTYPE", "").strip().lower() or "bfloat16"
+    if dtype not in {"bfloat16", "float16", "float32"}:
+        raise SystemExit(
+            f"LOCAL_DTYPE must be bfloat16, float16 or float32, got {dtype!r}."
+        )
+
+    config: dict[str, object] = {
+        "provider": LOCAL_PROVIDER,
+        "backend": "transformers",
+        "model": model,
+        "model_dir": model_dir.replace("/", "\\"),
+        "device": device,
+        "dtype": dtype,
+    }
+
+    max_new_tokens = environment.get("LOCAL_MAX_NEW_TOKENS", "").strip()
+    if max_new_tokens:
+        config["max_new_tokens"] = _checked_positive_int(
+            "LOCAL_MAX_NEW_TOKENS", max_new_tokens
+        )
+    startup_timeout = environment.get("LOCAL_STARTUP_TIMEOUT", "").strip()
+    if startup_timeout:
+        config["startup_timeout"] = _checked_positive_float(
+            "LOCAL_STARTUP_TIMEOUT", startup_timeout
+        )
     return config
 
 

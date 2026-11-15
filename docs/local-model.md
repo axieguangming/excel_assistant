@@ -18,7 +18,78 @@ Agent 每轮只做一件事：从 9 个固定工具中选一个、填参数。�
 | 歧义时直接猜而不澄清 | 需要专门的澄清样本微调 |
 | 复杂语义理解 | 不指望，超出工具能力时明确说明无法完成 |
 
-## 启动本地服务
+## 两种运行后端
+
+桌面版支持两种本地推理后端，由 `llm_config.json` 的 `backend` 字段决定。
+
+| | `transformers`（当前发行版） | `llama_server` |
+| --- | --- | --- |
+| 实现 | 进程内加载 HF 权重 | 启动 `llama-server` 子进程，HTTP 调用 |
+| 模型 | merged 后的 bf16 目录（约 3 GB） | GGUF（Q4_K_M 约 0.94 GB） |
+| 20 条样本通过率 | **85%** | 65% |
+| GPU 单任务耗时 | **约 3 秒** | 约 9 秒（CPU） |
+| 安装包体积 | 约 6.2 GB | 约 1.2 GB |
+
+### 为什么默认用 `transformers`
+
+同一份权重、同样 20 条样本、贪心解码，实测：
+
+```text
+transformers（进程内，bf16）   17/20 = 85%
+llama.cpp（bf16 GGUF）         13/20 = 65%
+```
+
+差异集中在 4 条多步链上，且**单向**——llama.cpp 独赢 0 条。已排除的原因：
+
+| 假设 | 结论 |
+| --- | --- |
+| 量化损失 | 排除。Q4_K_M 与 bf16 GGUF 同为 13/20 |
+| 数值实现差异 | 排除。同一 prompt 两边 top-5 logprob 最大偏差 0.1，top1 完全相同 |
+| tools schema | 已统一，修完 70% → 70%，无贡献 |
+| chat template | GGUF 内嵌与 HF 逐字节相同（2507 字符） |
+| 分词 | `/tokenize` 与 HF `input_ids` 完全相同（2130 tokens） |
+| 历史 `arguments` 编码 | 折叠后可让 prompt 字节相同，但 13/20 → 14/20（噪声内） |
+
+单步 logits 一致而整链行为不同，说明偏差在多轮累积中产生。改 llama.cpp 的参数不解决
+这个问题，因此换回 `transformers`。
+
+代价是安装包从 1.2 GB 涨到 6.2 GB（其中 torch 含 CUDA 运行时约 3.1 GB、模型 3.0 GB）。
+换来 20 个点的通过率，并且 GPU 上速度反而更快。
+
+### 构建 `transformers` 后端
+
+```ini
+LLM_PROVIDER=local
+LOCAL_BACKEND=transformers
+LOCAL_MODEL=excel-assistant-dpo2
+LOCAL_MODEL_DIR=models\embedded
+LOCAL_DEVICE=auto          # auto | cuda | cpu
+LOCAL_DTYPE=bfloat16       # bfloat16 | float16 | float32
+```
+
+```powershell
+.\packaging\build_windows.ps1 -PythonPath "D:\path\to\python.exe" `
+  -EmbeddedModelDir "build\merged-dpo2" `
+  -SkipInstaller
+```
+
+| 配置项 | 构建环境变量 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `backend` | `LOCAL_BACKEND` | `llama_server` | `transformers` 或 `llama_server` |
+| `model_dir` | `LOCAL_MODEL_DIR` | — | merged 后的 HF 模型目录 |
+| `device` | `LOCAL_DEVICE` | `auto` | `auto` 有 CUDA 就用 GPU |
+| `dtype` | `LOCAL_DTYPE` | `bfloat16` | GPU 不支持 bf16 时自动退到 fp16 |
+| `max_new_tokens` | `LOCAL_MAX_NEW_TOKENS` | `256` | 单次生成上限 |
+| `startup_timeout` | `LOCAL_STARTUP_TIMEOUT` | `180` | 加载权重的最长等待秒数 |
+
+模型目录只要求 `config.json` 存在，其余文件由 `build_windows.ps1` 递归复制到
+`models\embedded\`。构建结束会校验 `torch` / `transformers` 确实在包里——这是必需的，
+因为 `llama_server` 模式下它们被排除，切错后端会产出一个「能启动但一提问就 ImportError」的包。
+
+加载在后台线程进行（约 10–30 秒），期间 `/api/chat` 返回 503 并提示「正在加载」，
+界面顶部显示「加载中」，而不是让用户等一个无响应的请求。
+
+## 启动本地服务（`llama_server` 后端）
 
 ```powershell
 # 1. 获取 GGUF 量化模型（Q4_K_M 约 1 GB 内存占用）
@@ -27,8 +98,15 @@ Agent 每轮只做一件事：从 9 个固定工具中选一个、填参数。�
 # 2. 启动 OpenAI 兼容服务
 llama-server -m .\models\qwen2.5-1.5b-instruct-q4_k_m.gguf `
   --host 127.0.0.1 --port 8080 `
-  -c 8192 --jinja
+  -c 8192 --jinja `
+  --temp 0 --top-k 1 --top-p 1.0 --min-p 0.0 --repeat-penalty 1.0 -np 1
 ```
+
+最后一行不是可选项。`llama-server` 默认是 `temperature 0.7 / top_k 20 / top_p 0.8 /
+min_p 0.05 / repeat_penalty 1.1`，即使客户端传 `temperature=0`，其余采样器仍然生效。
+其中 `repeat_penalty 1.1` 危害最大：工具调用会反复输出 `"name"`、`"arguments"`、工具名
+这类相同短语，penalty 压低这些 token 的概率，模型就会改口、跳步，或陷入「同一个工具
+调用 9 次直到轮数上限」的循环。中和之后同配置两次测量逐条 20/20 完全一致。
 
 约束解码：llama.cpp 的 `llama-server` 支持 GBNF 语法约束（`--grammar` / `--grammar-file`）
 与 JSON Schema 约束（`--json-schema`，或请求体里的 `response_format`）。参数名与支持范围
@@ -58,11 +136,13 @@ JSON，这对 1.5B 模型是刚需，而不是可选项。
 
 ## 自动启动本地服务
 
+本节只适用于 `llama_server` 后端。`transformers` 后端在进程内加载，没有子进程可启动。
+
 打包后的程序可以在启动时自己拉起 `llama-server`，退出时关闭它，普通用户不需要开命令行。
-在构建配置中加上以下几项：
 
 ```ini
 LLM_PROVIDER=local
+LOCAL_BACKEND=llama_server
 LOCAL_BASE_URL=http://127.0.0.1:8080/v1
 LOCAL_MODEL=qwen2.5-1.5b-instruct
 LOCAL_AUTO_START=1
@@ -115,10 +195,23 @@ LOCAL_MODEL_SIZE=<字节数>
 
 ## 构建本地模型版安装包
 
-在构建环境或未提交的 `.env` 中声明本地提供方与模型来源：
+在构建环境或未提交的 `.env` 中声明本地提供方与模型来源。当前发行版用
+`transformers` 后端（见上文「两种运行后端」）：
 
 ```ini
 LLM_PROVIDER=local
+LOCAL_BACKEND=transformers
+LOCAL_MODEL=excel-assistant-dpo2
+LOCAL_MODEL_DIR=models\embedded
+LOCAL_DEVICE=auto
+LOCAL_DTYPE=bfloat16
+```
+
+`llama_server` 后端的配置形式为：
+
+```ini
+LLM_PROVIDER=local
+LOCAL_BACKEND=llama_server
 LOCAL_BASE_URL=http://127.0.0.1:8080/v1
 LOCAL_MODEL=qwen2.5-1.5b-instruct
 LOCAL_AUTO_START=1
@@ -128,7 +221,7 @@ LOCAL_MODEL_SHA256=<文件 SHA-256>
 LOCAL_MODEL_SIZE=<字节数>
 ```
 
-然后构建，并用 `-LlamaDir` 把推理程序一起打包：
+后一种还要用 `-LlamaDir` 把推理程序一起打包：
 
 ```powershell
 .\packaging\build_windows.ps1 -PythonPath "D:\path\to\python.exe" `
@@ -137,7 +230,55 @@ LOCAL_MODEL_SIZE=<字节数>
 
 `-LlamaDir` 指向包含 `llama-server.exe` 的目录，其全部内容会被复制到
 `dist\ExcelAssistant\llama\`，因此 `local_server` 写 `llama\llama-server.exe` 即可。
-安装包体积只增加几十 MB，模型在首次使用时下载。
+
+### 把模型一起打进去（离线可用）
+
+`transformers` 后端用 `-EmbeddedModelDir` 复制 merged 后的 HF 模型目录；
+`llama_server` 后端用 `-ModelDir` 复制 GGUF 文件。
+
+```powershell
+# transformers 后端（当前发行版）
+.\packaging\build_windows.ps1 -PythonPath "D:\path\to\python.exe" `
+  -EmbeddedModelDir "build\merged-dpo2"
+
+# llama_server 后端：只传一个文件即可；传目录会复制该目录下所有 .gguf
+.\packaging\build_windows.ps1 -PythonPath "D:\path\to\python.exe" `
+  -LlamaDir "build\llama-bin\cpu" `
+  -ModelDir "models\excel-assistant-dpo2-q4km.gguf"
+```
+
+`-EmbeddedModelDir` 递归复制到 `dist\ExcelAssistant\models\embedded\`（要求源目录含
+`config.json`）；`-ModelDir` 把文件复制到 `dist\ExcelAssistant\models\`。
+
+构建结束前会运行 `packaging/verify_dist.py`，校验四件事：
+
+1. DLL 来源正确（防止 conda base 环境的 `libexpat` / `libssl` 等覆盖构建环境的版本）
+2. 对 DLL 敏感的标准库扩展能加载（`pyexpat`、`_ssl`、`_sqlite3`、`_lzma` 等）
+3. `llm_config.json` 声明的路径在发行目录内确实存在
+4. `backend=transformers` 时 `torch` 与 `transformers` 确实在包里
+
+任何一项失败都直接报错，而不是产出一个看起来成功、实际打不开的包。这两个检查都对应过
+真实事故：前者是 `pyexpat` 报「操作系统无法运行 %1」（Windows 182，按序号导入失败），
+后者是配置写了 `local_model_path` 但文件没被打进去。
+
+> 这一步是补一个真实事故：`llm_config.json` 写入了 `local_model_path`，但文件没被
+> 打进 `dist`，构建仍然「成功」。安装后一启动就是 `error` 状态——既启动不了服务，
+> 也没有下载地址可用。校验逻辑现在会挡住这种情况。
+
+体积参考（Q4_K_M 模型，CPU 版 llama-server）：
+
+| 组成 | 大小 |
+| --- | --- |
+| `_internal`（Python 运行时与依赖） | 约 200 MB |
+| `llama\` | 约 62 MB |
+| `models\*.gguf`（Q4_K_M） | 约 940 MB |
+| `ExcelAssistant.exe` | 约 28 MB |
+| **合计** | **约 1.2 GB** |
+
+构建脚本会排除训练栈（`torch`、`transformers`、`bitsandbytes`、`accelerate`、`peft`、
+`datasets` 等）。桌面应用是通过 HTTP 调 llama-server 的，不需要它们；不排除的话
+`torch` + CUDA 库会让体积从 1.2 GB 涨到 4 GB。若将来桌面端要直接加载模型，
+需要从 `build_windows.ps1` 的 `$excludedModules` 里移除对应项。
 
 生成的 `dist\ExcelAssistant\llm_config.json` 形如：
 
